@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Scribsy Listening Post</title>
+<style>
+  :root {
+    color-scheme: light;
+    --brand-midnight: #1A2636;
+    --brand-teal: #179CA8;
+    --surface-1: #fcfcfb;
+    --page: #f9f9f7;
+    --ink-1: #0b0b0b;
+    --ink-2: #52514e;
+    --ink-muted: #898781;
+    --grid: #e1e0d9;
+    --baseline: #c3c2b7;
+    --border: rgba(11,11,11,0.10);
+    /* stance diverging: red arm | neutral | blue arm (validated ordinal arms, light) */
+    --st-hostile: #b73535; --st-wary: #e88a89; --st-conflicted: #d8d7d0;
+    --st-curious: #86b6ef; --st-pragmatic: #2a78d6; --st-enthusiastic: #104281;
+    /* sequential teal ramp (heatmap; zero recedes to surface) */
+    --seq-1: #a8dde3; --seq-2: #6cc3cc; --seq-3: #2fa5b1; --seq-4: #12707a; --seq-5: #0d4a52;
+    --bar: #12707a; /* single-hue bars: darker teal step, 4.1:1 on light surface */
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1: #1a1a19; --page: #0d0d0d;
+    --ink-1: #ffffff; --ink-2: #c3c2b7; --ink-muted: #898781;
+    --grid: #2c2c2a; --baseline: #383835; --border: rgba(255,255,255,0.10);
+    --st-hostile: #c04040; --st-wary: #e88a89; --st-conflicted: #4a4a47;
+    --st-curious: #86b6ef; --st-pragmatic: #3987e5; --st-enthusiastic: #184f95;
+    --seq-1: #0d4a52; --seq-2: #12707a; --seq-3: #2fa5b1; --seq-4: #6cc3cc; --seq-5: #a8dde3;
+    --bar: #2fa5b1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--page); color: var(--ink-1);
+    font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  header {
+    background: var(--brand-midnight); color: #fff;
+    padding: 18px 28px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 18px; font-weight: 600; margin: 0; letter-spacing: 0.2px; }
+  header .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--brand-teal); }
+  header .spacer { flex: 1; }
+  header .meta { color: rgba(255,255,255,0.72); font-size: 12px; }
+  button.ghost {
+    background: transparent; border: 1px solid rgba(255,255,255,0.35); color: #fff;
+    border-radius: 6px; padding: 5px 10px; cursor: pointer; font-size: 12px;
+  }
+  main { max-width: 1180px; margin: 0 auto; padding: 22px 20px 60px; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .tile {
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px;
+  }
+  .tile .v { font-size: 26px; font-weight: 600; }
+  .tile .l { color: var(--ink-2); font-size: 12px; margin-top: 2px; }
+  section.card {
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: 12px;
+    padding: 18px 20px; margin-bottom: 20px;
+  }
+  section.card h2 { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+  section.card .sub { color: var(--ink-2); font-size: 12.5px; margin: 0 0 14px; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--ink-2); margin: 8px 0 4px; }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+  svg text { font: 11px system-ui, sans-serif; fill: var(--ink-muted); }
+  svg .rowlab { fill: var(--ink-2); }
+  #tooltip {
+    position: fixed; pointer-events: none; z-index: 30; display: none; max-width: 300px;
+    background: var(--ink-1); color: var(--page); padding: 8px 10px; border-radius: 8px;
+    font-size: 12px; box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+  }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
+  .barrow { display: grid; grid-template-columns: minmax(140px, 240px) 1fr 42px; gap: 10px; align-items: center; margin: 6px 0; font-size: 13px; }
+  .barrow .name { color: var(--ink-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .barrow .track { height: 14px; position: relative; }
+  .barrow .fill { position: absolute; inset: 0 auto 0 0; background: var(--bar); border-radius: 0 4px 4px 0; min-width: 2px; }
+  .barrow .n { color: var(--ink-2); text-align: right; font-variant-numeric: tabular-nums; }
+  .personas { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+  .pcard { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .pcard h3 { margin: 0; font-size: 14px; }
+  .pcard .arch { color: var(--brand-teal); font-size: 12px; font-weight: 600; margin: 2px 0 8px; }
+  .pcard .share { font-size: 12px; color: var(--ink-2); }
+  .pcard ul { margin: 6px 0; padding-left: 18px; color: var(--ink-2); font-size: 12.5px; }
+  .pcard .quote { font-style: italic; color: var(--ink-2); font-size: 12.5px; border-left: 3px solid var(--brand-teal); padding-left: 10px; margin-top: 8px; }
+  .pcard .win { font-size: 12.5px; margin-top: 8px; }
+  .filters { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  select, input[type="search"] {
+    background: var(--surface-1); color: var(--ink-1); border: 1px solid var(--baseline);
+    border-radius: 6px; padding: 6px 8px; font-size: 13px;
+  }
+  .qcard { border-top: 1px solid var(--grid); padding: 10px 2px; font-size: 13px; }
+  .qcard .q { font-style: italic; }
+  .qcard .m { color: var(--ink-muted); font-size: 11.5px; margin-top: 4px; }
+  .qcard a { color: var(--brand-teal); text-decoration: none; }
+  .chip { display: inline-block; background: transparent; border: 1px solid var(--baseline); border-radius: 999px; padding: 1px 8px; font-size: 11px; color: var(--ink-2); margin-right: 4px; }
+  details.tbl { margin-top: 10px; }
+  details.tbl summary { cursor: pointer; color: var(--ink-2); font-size: 12px; }
+  details.tbl table { border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  details.tbl td, details.tbl th { border: 1px solid var(--grid); padding: 3px 7px; text-align: right; }
+  details.tbl th:first-child, details.tbl td:first-child { text-align: left; }
+  #setup { max-width: 520px; margin: 60px auto; }
+  #setup input { width: 100%; margin: 6px 0 12px; }
+  #setup button { background: var(--brand-teal); color: #fff; border: 0; border-radius: 6px; padding: 8px 16px; cursor: pointer; }
+  .err { color: #d03b3b; font-size: 13px; }
+  .askbtn { background: var(--brand-teal); color: #fff; border: 0; border-radius: 6px; padding: 6px 16px; cursor: pointer; font-size: 13px; }
+  .qa { border-top: 1px solid var(--grid); padding: 12px 2px; }
+  .qa .q { font-weight: 600; font-size: 13.5px; }
+  .qa .a { margin: 6px 0; font-size: 13.5px; white-space: pre-wrap; }
+  .qa .cav { color: var(--ink-2); font-size: 12px; font-style: italic; }
+  .qa .ev { color: var(--ink-2); font-size: 12px; margin-top: 6px; border-left: 3px solid var(--brand-teal); padding-left: 10px; }
+  .conf { display: inline-block; border-radius: 999px; padding: 1px 8px; font-size: 11px; margin-left: 6px; border: 1px solid var(--baseline); color: var(--ink-2); }
+  .dbrow { border-top: 1px solid var(--grid); padding: 8px 2px; font-size: 13px; }
+  .dbrow .k { font-size: 11px; }
+  .spin { color: var(--ink-2); font-size: 13px; }
+</style>
+</head>
+<body>
+<header>
+  <span class="dot"></span>
+  <h1>Scribsy Listening Post</h1>
+  <span class="meta" id="updated"></span>
+  <span class="spacer"></span>
+  <button class="ghost" id="themeToggle">Dark / light</button>
+  <button class="ghost" id="reconfig">API settings</button>
+</header>
+
+<div id="tooltip"></div>
+
+<main>
+  <section class="card" id="setup" hidden>
+    <h2>Connect to the insights API</h2>
+    <p class="sub">One-time setup, stored in this browser only.</p>
+    <label>Function app base URL (e.g. https://scribsy-listen-fn-2026.azurewebsites.net)</label>
+    <input id="apiBase" type="search" placeholder="https://...azurewebsites.net">
+    <label>Function key (insights function key or host key)</label>
+    <input id="apiKey" type="search" placeholder="key">
+    <button id="saveCfg">Connect</button>
+    <p class="err" id="setupErr"></p>
+  </section>
+
+  <div id="dash" hidden>
+    <div class="tiles" id="tiles"></div>
+
+    <section class="card">
+      <h2>Strategic answers</h2>
+      <p class="sub">Standing research questions, re-answered from the full corpus at every rollup. Confidence and caveats are the model's own, grounded in the aggregates below.</p>
+      <div id="brief"></div>
+    </section>
+
+    <section class="card">
+      <h2>Ask the corpus</h2>
+      <p class="sub">Ad-hoc research questions, answered from the analyzed data with cited quotes. Queries evolve — no redeploy needed.</p>
+      <div class="filters">
+        <input type="search" id="askQ" placeholder="e.g. Do professionals talk about AI differently than hobbyists?" style="flex:1;min-width:280px;">
+        <button id="askBtn" class="askbtn">Ask</button>
+      </div>
+      <div id="askOut"></div>
+    </section>
+
+    <section class="card">
+      <h2>Momentum signals</h2>
+      <p class="sub">Topics running hot this week vs their trailing 4-week average — PR moments and emerging concerns. Spikes are auto-filed to the Brain.</p>
+      <div id="signals"></div>
+    </section>
+
+    <div class="cols">
+      <section class="card">
+        <h2>Competitor watch</h2>
+        <p class="sub">Tool mentions with sentiment; "switching" = writers announcing they're leaving. Their churn is our wedge.</p>
+        <div id="competitors"></div>
+        <h3 style="font-size:13px;margin:14px 0 2px;">Recent switching moments</h3>
+        <div id="switching"></div>
+      </section>
+      <section class="card">
+        <h2>Pillar resonance</h2>
+        <p class="sub">Posts asking for what Scribsy builds — validation evidence and an authentic-engagement queue for launch. Engage as humans; never astroturf.</p>
+        <div id="resonance"></div>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>Anti-AI cohort: loud minority or anxious majority?</h2>
+      <p class="sub">Three lenses — share of posts, share of distinct authors, and commenter stance (closest to the silent population) — plus why the negative stance is held. Tiles show the Reddit frame (population-representative); frames are never pooled.</p>
+      <div class="tiles" id="cohortTiles"></div>
+      <p class="sub" id="frameNote"></p>
+      <div class="cols">
+        <div>
+          <h3 style="font-size:13px;margin:8px 0 2px;">Basis of negative stances</h3>
+          <div id="basisBars"></div>
+        </div>
+        <div>
+          <h3 style="font-size:13px;margin:8px 0 2px;">Commenter stance mix (all AI threads)</h3>
+          <div id="commentBars"></div>
+        </div>
+      </div>
+    </section>
+
+    <div class="cols">
+      <section class="card">
+        <h2>Minimum bar &amp; deal-breakers</h2>
+        <p class="sub">What writers treat as table stakes, and what makes them walk.</p>
+        <h3 style="font-size:13px;margin:8px 0 2px;">Expected baseline</h3>
+        <div id="baseline"></div>
+        <h3 style="font-size:13px;margin:14px 0 2px;">Deal-breakers</h3>
+        <div id="dealbreakers"></div>
+      </section>
+      <section class="card">
+        <h2>Trust</h2>
+        <p class="sub">What breaks writers' trust — and what earns it.</p>
+        <h3 style="font-size:13px;margin:8px 0 2px;">Breaks trust</h3>
+        <div id="trustBreaks"></div>
+        <h3 style="font-size:13px;margin:14px 0 2px;">Builds trust</h3>
+        <div id="trustBuilds"></div>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>Topic heat map</h2>
+      <p class="sub">AI-related posts per topic per week. Darker teal = more discussion. Hover any cell; click a topic name to filter the quote explorer.</p>
+      <div id="heatmap"></div>
+      <details class="tbl"><summary>Table view</summary><div id="heatmapTable"></div></details>
+    </section>
+
+    <section class="card">
+      <h2>Stance on AI over time</h2>
+      <p class="sub">Original posters' stance in AI-related threads, by week. Diverging scale: red = resistant, blue = receptive, gray = conflicted.</p>
+      <div class="legend" id="stanceLegend"></div>
+      <div id="stance"></div>
+      <details class="tbl"><summary>Table view</summary><div id="stanceTable"></div></details>
+    </section>
+
+    <section class="card">
+      <h2>Personas</h2>
+      <p class="sub">Synthesized from analyzed discussions; refreshed with each rollup. Quotes are verbatim from source posts.</p>
+      <div class="personas" id="personas"></div>
+    </section>
+
+    <div class="cols">
+      <section class="card">
+        <h2>Feature requests</h2>
+        <p class="sub">Tooling people wish existed, normalized across phrasings, split AI / non-AI.</p>
+        <h3 style="font-size:13px;margin:8px 0 2px;">AI-powered wishes</h3>
+        <div id="featuresAi"></div>
+        <h3 style="font-size:13px;margin:14px 0 2px;">Non-AI wishes</h3>
+        <div id="features"></div>
+      </section>
+      <section class="card">
+        <h2>Pain points &amp; tools</h2>
+        <p class="sub">Most-voiced frustrations; most-mentioned products.</p>
+        <h3 style="font-size:13px;margin:8px 0 2px;">Pain points</h3>
+        <div id="pains"></div>
+        <h3 style="font-size:13px;margin:14px 0 2px;">Tools mentioned</h3>
+        <div id="tools"></div>
+      </section>
+    </div>
+
+    <section class="card">
+      <h2>Quote explorer</h2>
+      <p class="sub">Verbatim voices from the threads. Every quote links to its source.</p>
+      <div class="filters">
+        <select id="fTopic"><option value="">All topics</option></select>
+        <select id="fStance"><option value="">All stances</option></select>
+        <select id="fExp"><option value="">All experience levels</option></select>
+        <select id="fSub"><option value="">All subreddits</option></select>
+        <input type="search" id="fText" placeholder="Search text…">
+      </div>
+      <div id="quotes"></div>
+    </section>
+  </div>
+</main>
+
+<script>
+'use strict';
+const $ = (s) => document.querySelector(s);
+const tooltip = $('#tooltip');
+
+/* ---------- theme ---------- */
+const savedTheme = localStorage.getItem('lp-theme');
+if (savedTheme) document.documentElement.dataset.theme = savedTheme;
+else if (matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.dataset.theme = 'dark';
+$('#themeToggle').onclick = () => {
+  const cur = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  document.documentElement.dataset.theme = cur;
+  localStorage.setItem('lp-theme', cur);
+  if (window.__data) render(window.__data);
+};
+
+/* ---------- config ---------- */
+function cfg() {
+  return { base: localStorage.getItem('lp-api-base'), key: localStorage.getItem('lp-api-key') };
+}
+$('#reconfig').onclick = () => { $('#setup').hidden = false; $('#dash').hidden = true; };
+$('#saveCfg').onclick = async () => {
+  const base = $('#apiBase').value.trim().replace(/\/+$/, '');
+  const key = $('#apiKey').value.trim();
+  if (!base || !key) { $('#setupErr').textContent = 'Both fields are required.'; return; }
+  localStorage.setItem('lp-api-base', base);
+  localStorage.setItem('lp-api-key', key);
+  load();
+};
+
+async function load() {
+  const { base, key } = cfg();
+  if (!base || !key) { $('#setup').hidden = false; return; }
+  $('#setupErr').textContent = '';
+  try {
+    const res = await fetch(`${base}/api/insights?view=all&code=${encodeURIComponent(key)}`);
+    if (!res.ok) throw new Error(`API ${res.status}`);
+    const data = await res.json();
+    window.__data = data;
+    $('#setup').hidden = true; $('#dash').hidden = false;
+    render(data);
+  } catch (e) {
+    $('#setup').hidden = false; $('#dash').hidden = true;
+    $('#setupErr').textContent = `Could not load insights: ${e.message}. Check URL/key and that rollup has run once.`;
+  }
+}
+
+/* ---------- helpers ---------- */
+const cssVar = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function showTip(html, ev) {
+  tooltip.innerHTML = html; tooltip.style.display = 'block';
+  const x = Math.min(ev.clientX + 14, innerWidth - 320);
+  tooltip.style.left = x + 'px'; tooltip.style.top = (ev.clientY + 14) + 'px';
+}
+function hideTip() { tooltip.style.display = 'none'; }
+
+const STANCE_ORDER = ['hostile', 'wary', 'conflicted', 'curious', 'pragmatic', 'enthusiastic'];
+const stanceColor = (s) => cssVar('--st-' + s) || cssVar('--st-conflicted');
+
+/* ---------- render ---------- */
+function render(data) {
+  const meta = data.meta || {};
+  renderTiles(meta, data);
+  renderBrief(data.brief);
+  renderSignals(data.signals);
+  renderCompetitors(data.competitors);
+  renderResonance(data.resonance);
+  renderCohort(data.cohort);
+  renderMinbar(data.minbar);
+  renderTrust(data.trust);
+  renderHeatmap(data.heatmap);
+  renderStance(data.stance);
+  renderPersonas(data.personas);
+  const board = data.features?.featureBoard || [];
+  renderBars('#featuresAi', board.filter((f) => f.aiRelated).map((f) => ({ name: f.feature, n: f.count, extra: f.examples })), true);
+  renderBars('#features', board.filter((f) => !f.aiRelated).map((f) => ({ name: f.feature, n: f.count, extra: f.examples })), true);
+  const dist = data.distributions || {};
+  renderBars('#pains', topN(dist.painCounts, 10));
+  renderBars('#tools', topN(dist.toolCounts, 10));
+  renderQuotes(data.quotes?.quotes || [], data.heatmap?.topics || []);
+  $('#updated').textContent = meta.updatedAt ? `updated ${new Date(meta.updatedAt).toLocaleString()}` : '';
+}
+
+function renderBrief(brief) {
+  const answers = (brief && brief.answers) || [];
+  $('#brief').innerHTML = answers.map((a) => `
+    <div class="qa">
+      <div class="q">${esc(a.question)}<span class="conf">${esc(a.confidence)} confidence</span></div>
+      <div class="a">${esc(a.answer)}</div>
+      ${a.caveats ? `<div class="cav">Caveats: ${esc(a.caveats)}</div>` : ''}
+      ${(a.evidence || []).slice(0, 3).map((e) => `<div class="ev">“${esc(e)}”</div>`).join('')}
+    </div>`).join('') || '<p class="sub">No brief yet — runs with the first rollup.</p>';
+}
+
+function renderSignals(s) {
+  const spikes = (s && s.spikes) || [];
+  $('#signals').innerHTML = spikes.length
+    ? spikes.map((x) => `
+      <div class="dbrow">
+        <strong>${esc(x.label)}</strong>
+        <span style="color:var(--ink-2)"> — ${x.thisWeek} posts this week vs ${x.trailingMean} avg</span>
+        <span class="chip">×${x.ratio}</span>
+      </div>`).join('')
+    : `<p class="sub">No topics spiking this week${s && s.week ? ` (${esc(s.week)})` : ''} — baseline chatter only.</p>`;
+}
+
+function renderCompetitors(c) {
+  const board = (c && c.board) || [];
+  const max = Math.max(1, ...board.map((t) => t.mentions));
+  $('#competitors').innerHTML = board.slice(0, 10).map((t) => {
+    const negShare = t.mentions ? Math.round(((t.negative + t.mixed * 0.5) / t.mentions) * 100) : 0;
+    return `
+    <div class="barrow">
+      <div class="name" title="${esc(t.tool)}">${esc(t.tool)}</div>
+      <div class="track"><div class="fill" style="width:${(t.mentions / max) * 100}%"></div></div>
+      <div class="n">${t.mentions}</div>
+    </div>
+    <div style="font-size:11.5px;color:var(--ink-2);margin:-2px 0 6px;">
+      ${negShare}% negative/mixed${t.switching ? ` · <strong>${t.switching} switching</strong>` : ''}
+    </div>`;
+  }).join('') || '<p class="sub">Nothing yet.</p>';
+  $('#switching').innerHTML = ((c && c.switchingMoments) || []).slice(0, 5).map((m) => `
+    <div class="dbrow">
+      <strong>${esc(m.tool)}</strong> <span style="color:var(--ink-2)">${esc(m.context)}</span>
+      <a href="${esc(m.permalink)}" target="_blank" rel="noopener">source</a>
+    </div>`).join('') || '<p class="sub">None captured yet.</p>';
+}
+
+function renderResonance(r) {
+  const posts = (r && r.posts) || [];
+  $('#resonance').innerHTML = posts.slice(0, 8).map((p) => `
+    <div class="dbrow">
+      <strong>${esc(p.title)}</strong> <span class="chip">fit ${p.fit}</span>
+      ${(p.hits || []).slice(0, 3).map((h) => `<span class="chip">${esc(h)}</span>`).join('')}
+      ${p.quote ? `<div class="ev" style="margin-top:4px;">“${esc(p.quote)}”</div>` : ''}
+      <div class="m" style="font-size:11.5px;color:var(--ink-muted);margin-top:3px;">
+        r/${esc(p.subreddit)} · ${esc(p.stance)} · <a href="${esc(p.permalink)}" target="_blank" rel="noopener">source</a>
+      </div>
+    </div>`).join('') || '<p class="sub">Nothing yet.</p>';
+  if (r && r.totalMatching > 8) {
+    $('#resonance').insertAdjacentHTML('beforeend', `<p class="sub" style="margin-top:8px;">${r.totalMatching} matching posts total — full list via API view <code>resonance</code>.</p>`);
+  }
+}
+
+function renderCohort(c) {
+  if (!c) { $('#cohortTiles').innerHTML = '<p class="sub">No cohort data yet.</p>'; return; }
+  const pct = (x) => (x * 100).toFixed(0) + '%';
+  $('#cohortTiles').innerHTML = [
+    { v: pct(c.negPostShare || 0), l: 'of AI posts are hostile/wary (OPs)' },
+    { v: pct(c.negAuthorShare || 0), l: 'of distinct authors lean negative' },
+    { v: pct(c.negEngagementShare || 0), l: 'of engagement goes to negative posts' },
+    { v: pct(c.hiIntensityNegShare || 0), l: 'of negative posts are max intensity' }
+  ].map((t) => `<div class="tile"><div class="v">${esc(t.v)}</div><div class="l">${esc(t.l)}</div></div>`).join('');
+  renderBars('#basisBars', topN(c.basisCounts, 8));
+  renderBars('#commentBars', topN(c.commentStanceTotals, 6));
+  const bsky = c.frames && c.frames.bluesky;
+  $('#frameNote').textContent = bsky && bsky.aiPosts
+    ? `Bluesky frame for comparison: ${(bsky.negPostShare * 100).toFixed(0)}% negative OPs across ${bsky.aiPosts} posts — expected to skew anti-AI by community composition; read as PR climate, not population.`
+    : '';
+}
+
+function renderMinbar(m) {
+  if (!m) { $('#baseline').innerHTML = '<p class="sub">Nothing yet.</p>'; $('#dealbreakers').innerHTML = ''; return; }
+  renderBars('#baseline', topN(m.baselineCounts, 10));
+  $('#dealbreakers').innerHTML = (m.dealBreakerBoard || []).slice(0, 10).map((d) => `
+    <div class="dbrow">
+      <strong>${esc(d.item)}</strong> <span class="chip k">${esc(d.kind)}</span> <span style="color:var(--ink-2)">×${d.count}</span>
+      ${(d.examples || []).slice(0, 1).map((e) => `<div class="ev" style="margin-top:4px;">“${esc(e.quote)}” <a href="${esc(e.permalink)}" target="_blank" rel="noopener">source</a></div>`).join('')}
+    </div>`).join('') || '<p class="sub">Nothing yet.</p>';
+}
+
+function renderTrust(t) {
+  if (!t) { $('#trustBreaks').innerHTML = '<p class="sub">Nothing yet.</p>'; $('#trustBuilds').innerHTML = ''; return; }
+  const row = (x) => ({ name: x.signal, n: x.count, extra: x.examples });
+  renderBars('#trustBreaks', (t.breaks || []).slice(0, 10).map(row), true);
+  renderBars('#trustBuilds', (t.builds || []).slice(0, 10).map(row), true);
+}
+
+/* ---------- ask the corpus ---------- */
+$('#askBtn').addEventListener('click', runAsk);
+$('#askQ').addEventListener('keydown', (e) => { if (e.key === 'Enter') runAsk(); });
+async function runAsk() {
+  const q = $('#askQ').value.trim();
+  if (!q) return;
+  const { base, key } = cfg();
+  $('#askOut').innerHTML = '<p class="spin">Thinking over the corpus…</p>';
+  try {
+    const res = await fetch(`${base}/api/ask?code=${encodeURIComponent(key)}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: q })
+    });
+    if (!res.ok) throw new Error(`API ${res.status}`);
+    const a = await res.json();
+    $('#askOut').innerHTML = `
+      <div class="qa">
+        <div class="q">${esc(a.question)}<span class="conf">${esc(a.confidence)} confidence · ${a.sampled}/${a.poolSize} posts sampled</span></div>
+        <div class="a">${esc(a.answer)}</div>
+        ${a.caveats ? `<div class="cav">Caveats: ${esc(a.caveats)}</div>` : ''}
+        ${(a.evidence || []).slice(0, 6).map((e) => `<div class="ev">“${esc(e.quote)}” <a href="${esc(e.permalink)}" target="_blank" rel="noopener">source</a></div>`).join('')}
+      </div>`;
+  } catch (e) {
+    $('#askOut').innerHTML = `<p class="err">Ask failed: ${esc(e.message)}</p>`;
+  }
+}
+const topN = (m, n) => Object.entries(m || {}).sort((a, b) => b[1] - a[1]).slice(0, n).map(([name, v]) => ({ name, n: v }));
+
+function renderTiles(meta, data) {
+  const stances = data.distributions?.stances || {};
+  const topStance = Object.entries(stances).sort((a, b) => b[1] - a[1])[0];
+  const pct = meta.totalPosts ? Math.round((meta.aiRelated / meta.totalPosts) * 100) : 0;
+  $('#tiles').innerHTML = [
+    { v: (meta.totalPosts ?? 0).toLocaleString(), l: 'posts analyzed' },
+    { v: pct + '%', l: 'discuss AI in writing' },
+    { v: (meta.subreddits || []).length, l: 'communities & streams tracked' },
+    { v: topStance ? topStance[0] : '—', l: 'most common stance' }
+  ].map((t) => `<div class="tile"><div class="v">${esc(t.v)}</div><div class="l">${esc(t.l)}</div></div>`).join('');
+}
+
+function renderHeatmap(hm) {
+  if (!hm) return;
+  const weeks = (hm.weeks || []).slice(-26); // last ~6 months of weeks
+  const topics = (hm.topics || []).filter((t) => t.slug !== 'other');
+  const max = Math.max(1, ...topics.flatMap((t) => weeks.map((w) => (hm.heat[t.slug] || {})[w] || 0)));
+  const ramp = ['--seq-1', '--seq-2', '--seq-3', '--seq-4', '--seq-5'].map(cssVar);
+  const cell = 26, ch = 20, left = 230, top = 26;
+  const W = left + weeks.length * cell + 10, H = top + topics.length * ch + 8;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Topic by week heat map">`;
+  weeks.forEach((w, i) => {
+    if (i % 4 === 0) s += `<text x="${left + i * cell + 2}" y="${top - 10}">${esc(w.slice(5))}</text>`;
+  });
+  topics.forEach((t, r) => {
+    const y = top + r * ch;
+    s += `<text class="rowlab" x="${left - 8}" y="${y + 14}" text-anchor="end" style="cursor:pointer" data-topic="${t.slug}">${esc(t.label)}</text>`;
+    weeks.forEach((w, i) => {
+      const v = (hm.heat[t.slug] || {})[w] || 0;
+      const fill = v === 0 ? 'transparent' : ramp[Math.min(ramp.length - 1, Math.floor((v / max) * ramp.length))];
+      s += `<rect x="${left + i * cell}" y="${y}" width="${cell - 2}" height="${ch - 2}" rx="3" fill="${fill}" stroke="var(--grid)" stroke-width="${v === 0 ? 1 : 0}" data-tip="${esc(t.label)} — ${esc(w)}: ${v} post${v === 1 ? '' : 's'}"></rect>`;
+    });
+  });
+  s += '</svg>';
+  $('#heatmap').innerHTML = s;
+  $('#heatmap').querySelectorAll('rect[data-tip]').forEach((r) => {
+    r.addEventListener('mousemove', (ev) => showTip(esc(r.dataset.tip), ev));
+    r.addEventListener('mouseleave', hideTip);
+  });
+  $('#heatmap').querySelectorAll('text[data-topic]').forEach((t) => {
+    t.addEventListener('click', () => { $('#fTopic').value = t.dataset.topic; applyQuoteFilters(); $('#quotes').scrollIntoView({ behavior: 'smooth' }); });
+  });
+  // table view
+  let tb = '<table><tr><th>Topic</th>' + weeks.map((w) => `<th>${esc(w.slice(5))}</th>`).join('') + '</tr>';
+  topics.forEach((t) => {
+    tb += `<tr><td>${esc(t.label)}</td>` + weeks.map((w) => `<td>${(hm.heat[t.slug] || {})[w] || 0}</td>`).join('') + '</tr>';
+  });
+  $('#heatmapTable').innerHTML = tb + '</table>';
+}
+
+function renderStance(st) {
+  if (!st) return;
+  const weeks = (st.weeks || []).slice(-26);
+  const byWeek = st.stanceByWeek || {};
+  const max = Math.max(1, ...weeks.map((w) => STANCE_ORDER.reduce((a, k) => a + ((byWeek[w] || {})[k] || 0), 0)));
+  const bw = 30, gap = 8, left = 34, top = 8, plotH = 180;
+  const W = left + weeks.length * (bw + gap), H = top + plotH + 26;
+  let s = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Stance by week stacked bars">`;
+  s += `<line x1="${left}" y1="${top + plotH}" x2="${W - 4}" y2="${top + plotH}" stroke="var(--baseline)"/>`;
+  weeks.forEach((w, i) => {
+    let y = top + plotH;
+    const x = left + i * (bw + gap);
+    const total = STANCE_ORDER.reduce((a, k) => a + ((byWeek[w] || {})[k] || 0), 0);
+    STANCE_ORDER.forEach((k) => {
+      const v = (byWeek[w] || {})[k] || 0;
+      if (!v) return;
+      const h = Math.max(2, (v / max) * plotH);
+      y -= h;
+      s += `<rect x="${x}" y="${y}" width="${bw}" height="${Math.max(0, h - 2)}" rx="2" fill="${stanceColor(k)}" data-tip="${esc(w)} — ${esc(k)}: ${v} of ${total}"></rect>`;
+    });
+    if (i % 4 === 0) s += `<text x="${x}" y="${top + plotH + 16}">${esc(w.slice(5))}</text>`;
+  });
+  s += '</svg>';
+  $('#stance').innerHTML = s;
+  $('#stance').querySelectorAll('rect[data-tip]').forEach((r) => {
+    r.addEventListener('mousemove', (ev) => showTip(esc(r.dataset.tip), ev));
+    r.addEventListener('mouseleave', hideTip);
+  });
+  $('#stanceLegend').innerHTML = STANCE_ORDER.map((k) => `<span><i style="background:${stanceColor(k)}"></i>${k}</span>`).join('');
+  let tb = '<table><tr><th>Week</th>' + STANCE_ORDER.map((k) => `<th>${k}</th>`).join('') + '</tr>';
+  weeks.forEach((w) => {
+    tb += `<tr><td>${esc(w)}</td>` + STANCE_ORDER.map((k) => `<td>${(byWeek[w] || {})[k] || 0}</td>`).join('') + '</tr>';
+  });
+  $('#stanceTable').innerHTML = tb + '</table>';
+}
+
+function renderPersonas(p) {
+  const list = (p && p.personas) || [];
+  $('#personas').innerHTML = list.map((x) => `
+    <div class="pcard">
+      <h3>${esc(x.name)}</h3>
+      <div class="arch">${esc(x.archetype)}</div>
+      <div class="share">~${Math.round(x.share_pct)}% of voices · stance: ${esc(x.stance_on_ai)}</div>
+      <ul>${(x.goals || []).slice(0, 3).map((g) => `<li>${esc(g)}</li>`).join('')}</ul>
+      <ul style="border-left:2px solid var(--st-wary); list-style:none; padding-left:10px;">${(x.fears || []).slice(0, 3).map((f) => `<li>⚠ ${esc(f)}</li>`).join('')}</ul>
+      <div class="win"><strong>What wins them:</strong> ${esc(x.what_would_win_them)}</div>
+      <div class="quote">“${esc(x.representative_quote)}”</div>
+    </div>`).join('') || '<p class="sub">No personas yet — run the rollup after analysis completes.</p>';
+}
+
+function renderBars(sel, items, withExamples) {
+  const max = Math.max(1, ...items.map((i) => i.n));
+  $(sel).innerHTML = items.map((i) => `
+    <div class="barrow" ${withExamples && i.extra?.length ? `data-ex='${esc(JSON.stringify(i.extra))}'` : ''}>
+      <div class="name" title="${esc(i.name)}">${esc(i.name)}</div>
+      <div class="track"><div class="fill" style="width:${(i.n / max) * 100}%"></div></div>
+      <div class="n">${i.n}</div>
+    </div>`).join('') || '<p class="sub">Nothing yet.</p>';
+  if (withExamples) {
+    $(sel).querySelectorAll('.barrow[data-ex]').forEach((row) => {
+      row.style.cursor = 'pointer';
+      row.addEventListener('mousemove', (ev) => {
+        const ex = JSON.parse(row.dataset.ex);
+        showTip(ex.map((e) => `“${esc(e.quote)}” <span style="opacity:.7">— r/${esc(e.subreddit)}</span>`).join('<hr style="border-color:rgba(255,255,255,.2)">'), ev);
+      });
+      row.addEventListener('mouseleave', hideTip);
+    });
+  }
+}
+
+/* ---------- quote explorer ---------- */
+let ALL_QUOTES = [], TOPIC_LABELS = {};
+function renderQuotes(quotes, topics) {
+  ALL_QUOTES = quotes;
+  TOPIC_LABELS = Object.fromEntries((topics || []).map((t) => [t.slug, t.label]));
+  const opts = (vals, sel) => { const el = $(sel); el.length = 1; [...vals].sort().forEach((v) => el.add(new Option(v, v))); };
+  opts(new Set(quotes.flatMap((q) => q.topics)), '#fTopic');
+  [...$('#fTopic').options].forEach((o) => { if (o.value) o.text = TOPIC_LABELS[o.value] || o.value; });
+  opts(new Set(quotes.map((q) => q.stance)), '#fStance');
+  opts(new Set(quotes.map((q) => q.experience)), '#fExp');
+  opts(new Set(quotes.map((q) => q.subreddit)), '#fSub');
+  applyQuoteFilters();
+}
+function applyQuoteFilters() {
+  const t = $('#fTopic').value, st = $('#fStance').value, ex = $('#fExp').value, sub = $('#fSub').value, txt = $('#fText').value.toLowerCase();
+  const out = ALL_QUOTES.filter((q) =>
+    (!t || q.topics.includes(t)) && (!st || q.stance === st) && (!ex || q.experience === ex) &&
+    (!sub || q.subreddit === sub) && (!txt || (q.quote + ' ' + q.title).toLowerCase().includes(txt))
+  ).slice(0, 60);
+  $('#quotes').innerHTML = out.map((q) => `
+    <div class="qcard">
+      <div class="q">“${esc(q.quote)}”</div>
+      <div class="m">
+        <span class="chip">${esc(q.stance)}</span><span class="chip">${esc(q.experience)}</span>
+        ${q.topics.slice(0, 3).map((x) => `<span class="chip">${esc(TOPIC_LABELS[x] || x)}</span>`).join('')}
+        r/${esc(q.subreddit)} · <a href="${esc(q.permalink)}" target="_blank" rel="noopener">${esc(q.title)}</a>
+      </div>
+    </div>`).join('') || '<p class="sub">No quotes match.</p>';
+}
+['#fTopic', '#fStance', '#fExp', '#fSub'].forEach((s) => $(s).addEventListener('change', applyQuoteFilters));
+$('#fText').addEventListener('input', applyQuoteFilters);
+
+load();
+</script>
+</body>
+</html>

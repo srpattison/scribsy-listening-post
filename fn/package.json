@@ -1,0 +1,18 @@
+{
+  "name": "scribsy-listening-post",
+  "version": "1.0.0",
+  "description": "Scribsy Listening Post — Reddit writer-sentiment ingestion, AOAI analysis, insights API",
+  "main": "src/functions/*.js",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "func start"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.6.0",
+    "@azure/data-tables": "^13.3.0",
+    "@azure/storage-blob": "^12.26.0",
+    "@azure/storage-queue": "^12.25.0"
+  }
+}
