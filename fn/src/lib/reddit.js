@@ -100,7 +100,7 @@ async function fetchTopComments(subreddit, postId, max = 20) {
     .map((c) => ({
       id: c.data.id,
       author: c.data.author,
-      score: c.data.score,
+      scoreAtCapture: c.data.score,
       body: (c.data.body || '').slice(0, 3000)
     }));
 }

@@ -37,6 +37,9 @@ const fakeAoai = {
 
 const silentContext = { log() {}, warn() {}, error() {} };
 
+// deploy.sh always sets these; config.js throws without them by design (§9.1).
+const TEST_ENV = { SUBREDDITS: 'writing,writers', SUB_TAGS: '{}', BSKY_STREAMS: '[{"name":"bsky-writing","query":"writing","kind":"topic"}]' };
+
 function row(i, over = {}) {
   return {
     partitionKey: over.sub || 'writing',
@@ -111,7 +114,7 @@ test('a full run writes every section and reports a clean summary', async () => 
 test('an empty corpus still writes every section instead of throwing', async () => {
   const store = fakeStore([]);
   const summary = await runRollup({
-    store, aoai: fakeAoai, context: silentContext, env: {}, now: () => new Date('2026-08-15T23:30:00.000Z')
+    store, aoai: fakeAoai, context: silentContext, env: TEST_ENV, now: () => new Date('2026-08-15T23:30:00.000Z')
   });
   assert.strictEqual(summary.ok, true, `sections failed: ${JSON.stringify(summary.sectionsFailed)}`);
   assert.deepStrictEqual(summary.sectionsWritten, ALL_SECTIONS);
@@ -131,7 +134,7 @@ test('a storage failure on one section does not stop the other fifteen', async (
   };
 
   const summary = await runRollup({
-    store, aoai: fakeAoai, context: silentContext, env: {}, now: () => new Date('2026-08-15T23:30:00.000Z')
+    store, aoai: fakeAoai, context: silentContext, env: TEST_ENV, now: () => new Date('2026-08-15T23:30:00.000Z')
   });
 
   assert.strictEqual(summary.ok, false);
@@ -153,7 +156,7 @@ test('unparseable rows are counted and do not reduce the sections written', asyn
   ];
   const store = fakeStore(rows);
   const summary = await runRollup({
-    store, aoai: fakeAoai, context: silentContext, env: {}, now: () => new Date('2026-08-15T23:30:00.000Z')
+    store, aoai: fakeAoai, context: silentContext, env: TEST_ENV, now: () => new Date('2026-08-15T23:30:00.000Z')
   });
 
   assert.strictEqual(summary.rowsScanned, 7);
@@ -163,10 +166,31 @@ test('unparseable rows are counted and do not reduce the sections written', asyn
   assert.deepStrictEqual(summary.sectionsWritten, ALL_SECTIONS);
 });
 
+test('missing SUB_TAGS fails the cohort loudly and leaves the rest intact', async () => {
+  // §9.1: an empty tag map is not a safe default — it would silently pool
+  // deliberately skewed enclave subs into the population cohort. The failure
+  // must be loud, and round 3's isolation must contain it to one section.
+  const store = fakeStore(Array.from({ length: 5 }, (_, i) => row(i)));
+  const summary = await runRollup({
+    store,
+    aoai: fakeAoai,
+    context: silentContext,
+    env: { SUBREDDITS: 'writing' }, // SUB_TAGS deliberately absent
+    now: () => new Date('2026-08-15T23:30:00.000Z')
+  });
+
+  assert.strictEqual(summary.ok, false);
+  assert.deepStrictEqual(summary.sectionsFailed.map((f) => f.name), ['cohort']);
+  assert.match(summary.sectionsFailed[0].error, /SUB_TAGS/, 'the error must name the missing setting');
+  assert.strictEqual(summary.sectionsWritten.length, ALL_SECTIONS.length - 1,
+    'every other section still writes');
+  assert.strictEqual(store.saved.get('cohort').payload.error.includes('SUB_TAGS'), true);
+});
+
 test('the run records a health row for /api/insights?view=health', async () => {
   const store = fakeStore([row(1)]);
   await runRollup({
-    store, aoai: fakeAoai, context: silentContext, env: {}, now: () => new Date('2026-08-15T23:30:00.000Z')
+    store, aoai: fakeAoai, context: silentContext, env: TEST_ENV, now: () => new Date('2026-08-15T23:30:00.000Z')
   });
   const health = store.saved.get('rollup-health');
   assert.ok(health, 'rollup-health row must exist');
@@ -184,7 +208,7 @@ test('AOAI failure degrades the section instead of failing the run', async () =>
     strategyBrief: async () => { throw new Error('AOAI 429'); }
   };
   const summary = await runRollup({
-    store, aoai: brokenAoai, context: silentContext, env: {}, now: () => new Date('2026-08-15T23:30:00.000Z')
+    store, aoai: brokenAoai, context: silentContext, env: TEST_ENV, now: () => new Date('2026-08-15T23:30:00.000Z')
   });
 
   assert.strictEqual(summary.ok, true, 'AOAI outages must not fail sections outright');

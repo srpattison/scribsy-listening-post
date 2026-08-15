@@ -1,0 +1,32 @@
+// Extract of fn/src/lib/rollup-engine.js at c939407 (pre-round-4).
+// Verbatim ranking code, kept ONLY so the engagement scanner can be proven
+// capable of failing. Not loaded as a module — see engagement-demotion.test.js.
+
+    totalEngagement += r.score;
+    if (negative.includes(r.stance) || r.stance === 'conflicted') {
+      for (const b of r.stanceBasis) { count(basisCounts, b); count(basisByStance[r.stance] || {}, b); }
+    }
+    if (negative.includes(r.stance)) {
+      negPosts++; negEngagement += r.score;
+      if (r.intensity >= 3) hiIntensityNeg++;
+    }
+  }, tally);
+  return {
+    aiPosts: frameRows.length,
+    negPosts,
+    negPostShare: frameRows.length ? negPosts / frameRows.length : 0,
+    distinctAuthors: authors.length,
+    negAuthorShare: authors.length ? negAuthors.length / authors.length : 0,
+    negEngagementShare: totalEngagement ? negEngagement / totalEngagement : 0,
+    hiIntensityNegShare: negPosts ? hiIntensityNeg / negPosts : 0,
+    commentStanceTotals,
+    commentedPosts,
+    basisCounts,
+    basisByStance
+  };
+
+        score: r.score || 0,
+            .sort((a, b) => b.score - a.score)
+            .sort((a, b) => b.score - a.score)
+              subreddit: r.subreddit, stance: r.stance, experience: r.experience, week: r.week, score: r.score
+          posts: resonancePosts.sort((a, b) => b.fit - a.fit || b.score - a.score).slice(0, 50),

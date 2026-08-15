@@ -43,11 +43,22 @@ const STANCE_BASIS = [
 // Deal-breaker kinds — what would make a writer refuse or abandon a tool.
 const DEALBREAKER_KINDS = ['missing-feature', 'trust-privacy', 'ai-policy', 'cost', 'platform-lock-in', 'other'];
 
-// Default subreddit set — override with SUBREDDITS app setting (comma-separated).
-const DEFAULT_SUBREDDITS = [
-  'writing', 'writers', 'nanowrimo', 'WritingWithAI', 'selfpublish',
-  'fantasywriters', 'scifiwriting', 'PubTips', 'KeepWriting', 'writingadvice'
-];
+// NOTE: there is deliberately no DEFAULT_SUBREDDITS here. The subreddit list
+// lives in exactly one place in this repo — deploy.sh — and is read from the
+// SUBREDDITS app setting at runtime via lib/config.js, which throws if it is
+// unset. A second copy in code drifted to 10 entries against a live 23 and
+// would have silently ingested the wrong corpus. See CB-LISTEN-REPO-4 §9.1.
+
+// Cheap keyword prefilter for comment triage (zero LLM cost). Used only to
+// decide whether a comment is worth paying to analyze — never to decide what a
+// row MEANS, and never applied to `community` Bluesky streams, whose whole
+// purpose is to sample writers who are not talking about AI.
+const AI_PREFILTER = /\b(a\.?i\.?|artificial intelligence|chatgpt|gpt-?\d*|claude|gemini|llm|copilot|sudowrite|novelcrafter|midjourney|generative|genai|machine.?(written|generated)|ai-?(generated|written|assisted|slop|art)|prompt(ing|ed)?|algorithm(ic)?ally generated)\b/i;
+
+// Does this text plausibly discuss AI? Prefilter only — deliberately generous.
+function mentionsAi(text) {
+  return AI_PREFILTER.test(String(text || ''));
+}
 
 // Bump when the analysis schema/prompt changes materially. Rows carry the
 // version they were analyzed under; POST /api/reanalyze re-runs older rows
@@ -64,4 +75,4 @@ const PILLAR_SIGNALS = {
   safeAI: /safe(ly)? (try|experiment|use)|without (the )?guilt|boundar|dial|control (over|of) (the )?ai/i
 };
 
-module.exports = { TOPICS, STANCES, EXPERIENCE, STANCE_BASIS, DEALBREAKER_KINDS, DEFAULT_SUBREDDITS, SCHEMA_VERSION, PILLAR_SIGNALS };
+module.exports = { TOPICS, STANCES, EXPERIENCE, STANCE_BASIS, DEALBREAKER_KINDS, SCHEMA_VERSION, PILLAR_SIGNALS, AI_PREFILTER, mentionsAi };

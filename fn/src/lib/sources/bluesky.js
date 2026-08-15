@@ -18,6 +18,8 @@
 // Rows from this source must never be pooled into population-level claims —
 // rollup and the strategy brief treat it as a separate frame.
 
+const config = require('../config');
+
 const BASE = () => (process.env.BSKY_SERVICE || process.env.BLUESKY_BASE || 'https://bsky.social').replace(/\/+$/, '');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -56,25 +58,19 @@ function userAgent() {
   return 'scribsy-listening-post/1.0 (market research; steven@scribsy.ai)';
 }
 
-// Default query streams. Override with BLUESKY_STREAMS app setting
-// (JSON: [{ "name": "bsky-writing-ai", "q": "writing AI" }, ...]).
-const DEFAULT_STREAMS = [
-  { name: 'bsky-writing-ai', q: 'writing AI novel' },
-  { name: 'bsky-ai-ethics', q: 'writers AI ethics' },
-  { name: 'bsky-ai-slop', q: 'AI slop writing' },
-  { name: 'bsky-ai-accused', q: 'accused AI writing' },
-  { name: 'bsky-nanowrimo', q: 'nanowrimo' },
-  { name: 'bsky-novel-november', q: '"novel november"' },
-  { name: 'bsky-ai-disclosure', q: 'author AI disclosure' }
-];
-
-function streams() {
-  try {
-    const s = JSON.parse(process.env.BLUESKY_STREAMS || 'null');
-    if (Array.isArray(s) && s.length) return s;
-  } catch { /* fall through */ }
-  return DEFAULT_STREAMS;
-}
+// Query streams come from the BSKY_STREAMS app setting — there is no hardcoded
+// list, because a copy in code is a copy that drifts (see §9.1). deploy.sh
+// carries the shipped default.
+//
+// Each stream is { name, query, kind } with kind "topic" | "community":
+//   topic     — keyword search ON the subject under study (AI + writing)
+//   community — unfiltered writer-population sample (#WriterSky, #BookSky …)
+//
+// These are different sampling frames. A corpus selected on people talking
+// about AI cannot measure what fraction of writers talk about AI, which is
+// exactly standing question 5. `community` streams are therefore NEVER
+// keyword-filtered at ingest, and the rollup reports them as a separate frame.
+const streams = (env = process.env) => config.bskyStreams(env);
 
 async function apiGet(path, params, isRetry = false) {
   const url = new URL(BASE() + '/xrpc/' + path);
@@ -107,6 +103,7 @@ function normalizePost(p, streamName) {
   const rkey = (p.uri || '').split('/').pop();
   return {
     source: 'bluesky',
+    kind: 'post',
     subreddit: streamName, // community key = stream name
     id: postIdFromUri(p.uri),
     uri: p.uri,
@@ -130,7 +127,7 @@ async function searchStream(stream, { sinceUtc, maxPages = 3 } = {}) {
   let cursor;
   for (let page = 0; page < maxPages; page++) {
     const data = await apiGet('app.bsky.feed.searchPosts', {
-      q: stream.q,
+      q: stream.query,
       sort: 'latest',
       limit: 100,
       cursor,
@@ -146,7 +143,9 @@ async function searchStream(stream, { sinceUtc, maxPages = 3 } = {}) {
 }
 
 // Top-level replies to a post — the "comments" for stance-mix analysis.
-async function fetchTopComments(uri, max = 20) {
+// Selected CHRONOLOGICALLY, not by likes: engagement counts are a capture-time
+// snapshot and must not rank anything (§3c).
+async function fetchPostComments(uri, max = 20) {
   const data = await apiGet('app.bsky.feed.getPostThread', { uri, depth: 1 });
   const replies = (data.thread && data.thread.replies) || [];
   return replies
@@ -154,11 +153,12 @@ async function fetchTopComments(uri, max = 20) {
     .map((r) => ({
       id: postIdFromUri(r.post.uri),
       author: (r.post.author && r.post.author.handle) || 'unknown',
-      score: r.post.likeCount || 0,
+      scoreAtCapture: r.post.likeCount || 0, // stored, never ranked on
+      createdUtc: Math.floor(new Date((r.post.record && r.post.record.createdAt) || r.post.indexedAt || 0).getTime() / 1000),
       body: (r.post.record.text || '').slice(0, 3000)
     }))
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => a.createdUtc - b.createdUtc)
     .slice(0, max);
 }
 
-module.exports = { streams, searchStream, fetchTopComments, DEFAULT_STREAMS };
+module.exports = { streams, searchStream, fetchPostComments };

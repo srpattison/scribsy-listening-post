@@ -30,6 +30,7 @@ async function apiGet(path, params) {
 function normalizePost(d) {
   return {
     source: 'reddit',
+    kind: 'post',
     subreddit: (d.subreddit || 'unknown').toLowerCase(), // community key
     id: d.id,
     title: d.title || '',
@@ -56,22 +57,80 @@ async function fetchPosts(subreddit, { afterUtc, beforeUtc, limit = 100 } = {}) 
   return rows.map(normalizePost);
 }
 
-// Top-level comments for a post, best-scored first.
-async function fetchTopComments(postId, max = 20) {
+const stripPrefix = (v) => (v ? String(v).replace(/^t\d_/, '') : null);
+
+// A comment as a first-class corpus row.
+//
+// The permalink must carry the comment shape — /comments/<linkId>/<slug>/<id> —
+// because that is how a comment row is distinguished from a submission
+// downstream (and it is the measurement that defined this defect: 0 of 200
+// sampled rows matched it).
+function normalizeComment(d) {
+  const sub = (d.subreddit || 'unknown').toLowerCase();
+  const linkId = stripPrefix(d.link_id);
+  const parentRaw = d.parent_id ? String(d.parent_id) : '';
+  const body = (d.body || '').slice(0, 12_000);
+  return {
+    source: 'reddit',
+    kind: 'comment',
+    subreddit: sub,
+    id: d.id,
+    linkId,
+    // Top-level comments hang off the submission (t3_), replies off a comment (t1_).
+    parentId: parentRaw.startsWith('t1_') ? stripPrefix(parentRaw) : null,
+    title: body.split('\n')[0].slice(0, 200),
+    selftext: body,
+    author: d.author,
+    score: d.score || 0,
+    num_comments: 0,
+    created_utc: typeof d.created_utc === 'number' ? d.created_utc : Math.floor(new Date(d.created_utc).getTime() / 1000),
+    permalink: d.permalink
+      ? 'https://www.reddit.com' + d.permalink
+      : `https://www.reddit.com/r/${sub}/comments/${linkId}/comment/${d.id}/`,
+    flair: null,
+    is_self: true
+  };
+}
+
+// Comments for one subreddit in [afterUtc, beforeUtc), ascending by created_utc.
+// Same walk shape as fetchPosts so backfill can drive either.
+async function fetchComments(subreddit, { afterUtc, beforeUtc, limit = 100 } = {}) {
+  const rows = await apiGet('/api/comments/search', {
+    subreddit,
+    after: afterUtc ? new Date(afterUtc * 1000).toISOString() : undefined,
+    before: beforeUtc ? new Date(beforeUtc * 1000).toISOString() : undefined,
+    sort: 'asc',
+    limit
+  });
+  return rows.map(normalizeComment);
+}
+
+// Replies attached to a submission's raw archive, for comment_stance_mix.
+//
+// Selection is CHRONOLOGICAL, not by score: Arctic Shift captures a
+// near-creation snapshot with variable per-row lag, so ranking by `score` ranks
+// by how late the archiver happened to look. See CB-LISTEN-REPO-4 §3c.
+async function fetchComments_forPost(postId, max = 20) {
   const rows = await apiGet('/api/comments/search', {
     link_id: `t3_${postId}`,
     limit: 100
   });
   return rows
     .filter((c) => !c.parent_id || String(c.parent_id).startsWith('t3_')) // top-level only
-    .sort((a, b) => (b.score || 0) - (a.score || 0))
+    .sort((a, b) => (a.created_utc || 0) - (b.created_utc || 0))
     .slice(0, max)
     .map((c) => ({
       id: c.id,
       author: c.author,
-      score: c.score || 0,
+      scoreAtCapture: c.score || 0, // stored, never ranked on
       body: (c.body || '').slice(0, 3000)
     }));
 }
 
-module.exports = { fetchPosts, fetchTopComments };
+module.exports = {
+  fetchPosts,
+  fetchComments,
+  fetchPostComments: fetchComments_forPost,
+  normalizeComment,
+  normalizePost
+};

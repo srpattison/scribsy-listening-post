@@ -12,14 +12,12 @@ const arctic = require('../lib/sources/arcticshift');
 const bsky = require('../lib/sources/bluesky');
 const redditOauth = require('../lib/reddit');
 const store = require('../lib/store');
-const { DEFAULT_SUBREDDITS } = require('../lib/taxonomy');
+const config = require('../lib/config');
 
 const OVERLAP_SECONDS = 3 * 24 * 3600; // re-scan window for Arctic late arrivals
 
-function subreddits() {
-  const s = process.env.SUBREDDITS;
-  return s ? s.split(',').map((x) => x.trim()).filter(Boolean) : DEFAULT_SUBREDDITS;
-}
+// Throws if SUBREDDITS is unset — never falls back to a stale list (§9.1).
+const subreddits = () => config.subreddits();
 
 async function getWatermark(key) {
   const w = await store.getAggregate('watermark', key);
@@ -66,7 +64,7 @@ async function ingestRedditArctic(context, counters) {
           counters.discovered++;
           newest = Math.max(newest, post.created_utc);
           const comments = post.num_comments >= minComments
-            ? await arctic.fetchTopComments(post.id, 20).catch(() => [])
+            ? await arctic.fetchPostComments(post.id, 20).catch(() => [])
             : [];
           await admitPost(context, post, comments, counters);
         }
@@ -118,7 +116,7 @@ async function ingestBluesky(context, counters) {
         counters.discovered++;
         newest = Math.max(newest, post.created_utc);
         const comments = post.num_comments >= minReplies
-          ? await bsky.fetchTopComments(post.uri, 20).catch(() => [])
+          ? await bsky.fetchPostComments(post.uri, 20).catch(() => [])
           : [];
         await admitPost(context, post, comments, counters);
       }

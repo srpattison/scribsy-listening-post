@@ -18,6 +18,52 @@
 // earlier one reads it from `results` and must tolerate it being missing.
 
 const { TOPICS, PILLAR_SIGNALS } = require('./taxonomy');
+const config = require('./config');
+const commentPolicy = require('./comment-policy');
+
+// ---------------------------------------------------------------------------
+// Salience — corpus-derived, never engagement-derived (§3c)
+// ---------------------------------------------------------------------------
+//
+// `score` and `numComments` come from Arctic Shift's near-creation snapshot and
+// are never backfilled. Capture lag varies per row (35% of rows sit at score 1,
+// 32% at 0 comments), so the numbers look like genuine variance but are mostly
+// capture timing — and the lag plausibly correlates with subreddit size and
+// archive era, so the injected error is not even random. Nothing here may
+// weight, rank, sort or threshold on them.
+//
+// Where ranking is genuinely needed, salience is how often a row's claims RECUR
+// across independent threads: a concern raised in twenty threads outranks one
+// raised in a single popular one, which is the question we actually care about.
+function buildRecurrenceIndex(rows) {
+  const topicThreads = {}, painThreads = {};
+  const add = (map, key, thread) => {
+    if (!key) return;
+    (map[key] = map[key] || new Set()).add(thread);
+  };
+  for (const r of rows) {
+    const thread = r.threadId || r.id;
+    for (const t of r.topics || []) add(topicThreads, t, thread);
+    for (const p of r.painPoints || []) add(painThreads, String(p || '').toLowerCase().trim(), thread);
+  }
+  const counts = (m) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, v.size]));
+  return { topics: counts(topicThreads), pains: counts(painThreads) };
+}
+
+// Distinct-thread recurrence of a row's claims. Deterministic, engagement-free.
+function salienceOf(row, index) {
+  let s = 0;
+  for (const t of row.topics || []) s += index.topics[t] || 0;
+  for (const p of row.painPoints || []) s += index.pains[String(p || '').toLowerCase().trim()] || 0;
+  return s;
+}
+
+// Stable ordering: salience desc, then oldest-first, then id — so equal-salience
+// rows do not reshuffle between runs.
+const bySalience = (index) => (a, b) =>
+  salienceOf(b, index) - salienceOf(a, index) ||
+  (a.createdUtc || 0) - (b.createdUtc || 0) ||
+  String(a.id).localeCompare(String(b.id));
 
 // ---------------------------------------------------------------------------
 // Row parsing — per-row isolation (§4.2)
@@ -40,12 +86,19 @@ function parseRows(rows) {
     try {
       items.push({
         source: r.source || 'reddit',
+        // `kind` is absent on every pre-round-4 row; missing means submission.
+        kind: r.kind === 'comment' ? 'comment' : 'post',
+        threadId: r.linkId || r.rowKey, // comments group under their submission
+        parentId: r.parentId || null,
         subreddit: r.partitionKey,
         id: r.rowKey,
         title: r.title,
         author: r.author || '',
         permalink: r.permalink,
-        score: r.score || 0,
+        // Renamed on read so no future consumer mistakes a capture-time
+        // snapshot for a current value. Stored, displayed, never ranked on.
+        scoreAtCapture: r.score || 0,
+        numCommentsAtCapture: r.numComments || 0,
         createdUtc: r.createdUtc,
         week: a.week || '',
         aiRelated: !!a.ai_related,
@@ -167,14 +220,16 @@ function computeCohort(frameRows, tally) {
     for (const [k, v] of Object.entries(r.commentMix)) count(commentStanceTotals, k, v || 0);
   }, tally);
   const basisCounts = {}, basisByStance = { hostile: {}, wary: {}, conflicted: {} };
-  let negPosts = 0, negEngagement = 0, totalEngagement = 0, hiIntensityNeg = 0;
+  let negPosts = 0, hiIntensityNeg = 0;
+  const negThreads = new Set(), allThreads = new Set();
   forEachRow(frameRows, (r) => {
-    totalEngagement += r.score;
+    allThreads.add(r.threadId || r.id);
     if (negative.includes(r.stance) || r.stance === 'conflicted') {
       for (const b of r.stanceBasis) { count(basisCounts, b); count(basisByStance[r.stance] || {}, b); }
     }
     if (negative.includes(r.stance)) {
-      negPosts++; negEngagement += r.score;
+      negPosts++;
+      negThreads.add(r.threadId || r.id);
       if (r.intensity >= 3) hiIntensityNeg++;
     }
   }, tally);
@@ -184,7 +239,12 @@ function computeCohort(frameRows, tally) {
     negPostShare: frameRows.length ? negPosts / frameRows.length : 0,
     distinctAuthors: authors.length,
     negAuthorShare: authors.length ? negAuthors.length / authors.length : 0,
-    negEngagementShare: totalEngagement ? negEngagement / totalEngagement : 0,
+    // Replaces the former negEngagementShare, which weighted by `score` — an
+    // Arctic Shift capture-time snapshot with variable per-row lag (§3c).
+    // Thread spread is corpus-derived: how many distinct conversations carry a
+    // negative voice, not how many upvotes the archiver happened to catch.
+    negThreadShare: allThreads.size ? negThreads.size / allThreads.size : 0,
+    distinctThreads: allThreads.size,
     hiIntensityNegShare: negPosts ? hiIntensityNeg / negPosts : 0,
     commentStanceTotals,
     commentedPosts,
@@ -195,15 +255,20 @@ function computeCohort(frameRows, tally) {
 
 // Builds the ordered section list. Order is preserved from the pre-round-3
 // write sequence so the on-storage layout is unchanged.
-function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = () => new Date() }) {
+function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = () => new Date(), commentMentions = [], commentStats = null }) {
+  const salience = buildRecurrenceIndex(rows);
   return [
     {
       name: 'meta',
       build: () => ({
         totalPosts: rows.length,
         aiRelated: aiRows.length,
+        submissions: rows.filter((r) => r.kind === 'post').length,
+        comments: rows.filter((r) => r.kind === 'comment').length,
+        commentCorpus: commentStats, // ingested vs analyzed, incl. the policy dry run
         subreddits: [...new Set(rows.map((r) => r.subreddit))].sort(),
         weeks,
+        engagementNote: 'score/numComments are an Arctic Shift capture-time snapshot with variable per-row lag. Surfaced as scoreAtCapture/numCommentsAtCapture; nothing ranks on them.',
         updatedAt: now().toISOString()
       })
     },
@@ -350,10 +415,21 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
         // Frame assignment: bluesky is its own frame; Reddit subs split by
         // SUB_TAGS. Enclave subs are deliberately skewed communities — kept as
         // comparison frames so adding them never shifts the population numbers.
-        let subTags = {};
-        try { subTags = JSON.parse(env.SUB_TAGS || '{}'); } catch { /* ignore bad JSON */ }
+        // Throws if SUB_TAGS is unset: an empty tag map would silently pool
+        // deliberately skewed enclave subs into the population cohort (§9.1).
+        const subTags = config.subTags(env);
+        // Bluesky streams split by kind. `topic` streams are keyword searches ON
+        // the subject under study; `community` streams are unfiltered writer
+        // samples. Pooling them would manufacture the exact answer standing
+        // question 5 asks for, so they are separate frames (§8).
+        const streamKinds = config.bskyStreamKinds(env);
         const tagOf = (r) => {
-          if (r.source === 'bluesky') return 'bluesky';
+          if (r.source === 'bluesky') {
+            const k = streamKinds[r.subreddit];
+            if (k === 'community') return 'bluesky-community';
+            if (k === 'topic') return 'bluesky-topic';
+            return 'bluesky-untagged'; // stream not in BSKY_STREAMS — never pooled into either
+          }
           const t = subTags[r.subreddit] || subTags[Object.keys(subTags).find((k) => k.toLowerCase() === r.subreddit) || ''];
           return t ? `reddit-${t}` : 'reddit';
         };
@@ -367,7 +443,8 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
         return {
           ...primary,
           primaryFrame: frames.reddit ? 'reddit (general subs)' : Object.keys(frames)[0] || 'none',
-          frames
+          frames,
+          frameNote: 'Frames are never pooled. Reddit general subs are the population-representative primary; enclave subs and Bluesky topic streams are keyword- or community-selected and cannot answer population questions. bluesky-community is the only unfiltered Bluesky writer sample.'
         };
       }
     },
@@ -378,13 +455,14 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
         forEachRow(aiRows, (r) => { if (r.quote) picked.push(r); }, tally);
         return {
           quotes: picked
-            .sort((a, b) => b.score - a.score)
+            .sort(bySalience(salience))
             .slice(0, 400)
             .map((r) => ({
               quote: r.quote, stance: r.stance, experience: r.experience,
               topics: r.topics, subreddit: r.subreddit, permalink: r.permalink,
-              title: r.title, week: r.week
-            }))
+              title: r.title, week: r.week, kind: r.kind
+            })),
+          ranking: 'recurrence across distinct threads — never Reddit engagement'
         };
       }
     },
@@ -395,7 +473,7 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
         try {
           const sample = aiRows
             .slice()
-            .sort((a, b) => b.score - a.score)
+            .sort(bySalience(salience))
             .map((r) => ({ stance: r.stance, experience: r.experience, summary: r.summary, quote: r.quote }));
           return await aoai.synthesizePersonas(sample, {
             total: aiRows.length,
@@ -462,14 +540,18 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
           if (fit >= 4) {
             resonancePosts.push({
               fit, hits, title: r.title, quote: r.quote, permalink: r.permalink,
-              subreddit: r.subreddit, stance: r.stance, experience: r.experience, week: r.week, score: r.score
+              subreddit: r.subreddit, stance: r.stance, experience: r.experience, week: r.week,
+              kind: r.kind,
+              salience: salienceOf(r, salience),
+              scoreAtCapture: r.scoreAtCapture // displayed with a capture-time label, never ranked on
             });
           }
         }, tally);
         return {
-          posts: resonancePosts.sort((a, b) => b.fit - a.fit || b.score - a.score).slice(0, 50),
+          posts: resonancePosts.sort((a, b) => b.fit - a.fit || b.salience - a.salience).slice(0, 50),
           totalMatching: resonancePosts.length,
-          note: 'Engagement queue: reply as humans, never astroturf; provenance pitch lands best on accusation-pain posts.'
+          note: 'Engagement queue: reply as humans, never astroturf; provenance pitch lands best on accusation-pain posts.',
+          ranking: 'pillar fit, then recurrence across distinct threads — never Reddit engagement'
         };
       }
     },
@@ -501,20 +583,27 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
         for (const r of rows) tracked.add(r.subreddit); // anything we already ingest
         const NOISE = new Set(['all', 'askreddit', 'popular', 'funny', 'pics', 'memes', 'aita', 'amitheasshole']);
         const mentionCounts = {}, mentionedBy = {};
-        forEachRow(rows, (r) => {
-          for (const m of r.subMentions) {
-            if (tracked.has(m) || NOISE.has(m)) continue;
+        const tally1 = (sub, mentions) => {
+          for (const m of mentions) {
+            if (!m || tracked.has(m) || NOISE.has(m)) continue;
             count(mentionCounts, m);
-            (mentionedBy[m] = mentionedBy[m] || new Set()).add(r.subreddit);
+            (mentionedBy[m] = mentionedBy[m] || new Set()).add(sub);
           }
-        }, tally);
+        };
+        forEachRow(rows, (r) => tally1(r.subreddit, r.subMentions), tally);
+        // Comment mentions come straight from the ingest-time extraction, so
+        // discovery works even under the ingest-only comment policy — the
+        // runbook always claimed r/Sub extraction ran over comments, and until
+        // round 4 there were no comments for it to run over (§3a.7).
+        forEachRow(commentMentions, (c) => tally1(c.subreddit, c.mentions), tally);
         return {
           candidates: Object.entries(mentionCounts)
             .filter(([, n]) => n >= 3)
             .sort((a, b) => b[1] - a[1])
             .slice(0, 40)
             .map(([name, n]) => ({ sub: name, mentions: n, citedBy: [...mentionedBy[name]].slice(0, 6) })),
-          note: 'Subs cited >=3 times by tracked communities and not yet ingested. Vet before adding: writer-side? active? enclave tag needed?'
+          note: 'Subs cited >=3 times by tracked communities and not yet ingested. Vet before adding: writer-side? active? enclave tag needed?',
+          sources: { analyzedRows: rows.length, commentRows: commentMentions.length }
         };
       }
     },
@@ -591,7 +680,37 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
   const weeks = [...new Set(rows.map((r) => r.week).filter(Boolean))].sort();
   context?.log?.(`rollup over ${rows.length} analyzed posts (${aiRows.length} AI-related, ${rowsSkipped} unparseable)`);
 
-  const sections = buildSections({ rows, aiRows, weeks, env, aoai, store, context, now });
+  // Comment corpus: triage columns only — no bodies, no blobs, no model calls.
+  // Feeds discovery (ingest-time r/Sub extraction) and the policy dry run that
+  // prices comment analysis before any of it is switched on (§3b).
+  let commentMentions = [];
+  let commentStats = null;
+  if (typeof store.listCommentTriage === 'function') {
+    try {
+      const triage = await store.listCommentTriage();
+      commentMentions = triage.map((c) => ({
+        subreddit: c.partitionKey,
+        mentions: c.subMentionsCsv ? String(c.subMentionsCsv).split(',').filter(Boolean) : []
+      }));
+      const aiFlags = typeof store.analyzedPostAiFlags === 'function'
+        ? await store.analyzedPostAiFlags()
+        : new Map();
+      const dry = commentPolicy.dryRun(triage, aiFlags, { minChars: config.commentMinChars(env) });
+      const submissions = rows.filter((r) => r.kind === 'post').length;
+      commentStats = {
+        ...dry,
+        analyzed: triage.filter((c) => c.analyzed === true).length,
+        policy: config.commentAnalyzePolicy(env),
+        commentsPerSubmission: submissions ? triage.length / submissions : null,
+        submissionsAnalyzed: submissions
+      };
+    } catch (e) {
+      context?.warn?.(`comment corpus scan failed (non-fatal): ${e.message}`);
+      commentStats = { error: e.message };
+    }
+  }
+
+  const sections = buildSections({ rows, aiRows, weeks, env, aoai, store, context, now, commentMentions, commentStats });
   const { results, written, failed, rowIssues } = await runSections(sections, {
     saveAggregate: (p, k, v) => store.saveAggregate(p, k, v),
     context,
@@ -605,6 +724,10 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
     rowsScanned: rawRows.length,
     rowsAnalyzed: rows.length,
     rowsSkipped,
+    // Corpus/pricing figures for the comment round. `commentCorpus.wouldSelect`
+    // is a COUNTED dry run of the live policy predicate, not an estimate —
+    // §10.3 requires it before any further comment walk is queued.
+    commentCorpus: commentStats,
     rowIssues,
     durationMs: Date.now() - startedMs,
     finishedAt: now().toISOString()
@@ -639,4 +762,7 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
   return summary;
 }
 
-module.exports = { parseRows, forEachRow, runSections, buildSections, runRollup, computeCohort, topNObj, count };
+module.exports = {
+  parseRows, forEachRow, runSections, buildSections, runRollup, computeCohort,
+  topNObj, count, buildRecurrenceIndex, salienceOf, bySalience
+};

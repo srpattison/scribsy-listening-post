@@ -10,6 +10,7 @@
 
 const { app } = require('@azure/functions');
 const store = require('../lib/store');
+const { kindOf, idFromRowKey } = require('../lib/rowkeys');
 const { SCHEMA_VERSION } = require('../lib/taxonomy');
 
 app.http('reanalyze', {
@@ -22,18 +23,36 @@ app.http('reanalyze', {
     const force = p.get('force') === '1';
     const sub = (p.get('sub') || '').toLowerCase();
 
+    // `kind=comments|posts` scopes the re-run. Comments still pass through
+    // COMMENT_ANALYZE_POLICY in the analyzer, so a reanalyze can never be the
+    // thing that silently switches comment spend on.
+    const kindFilter = p.get('kind');
+
     const rows = await store.listAnalyzedPosts();
-    let enqueued = 0, skipped = 0;
+    let enqueued = 0, skipped = 0, comments = 0;
     for (const r of rows) {
       if (enqueued >= limit) break;
       if (sub && r.partitionKey !== sub) continue;
+      const kind = kindOf(r);
+      if (kindFilter === 'comments' && kind !== 'comment') continue;
+      if (kindFilter === 'posts' && kind !== 'post') continue;
       const v = r.schemaVersion || 1;
       if (!force && v >= minVersion) { skipped++; continue; }
       if (!r.createdUtc) { skipped++; continue; }
-      await store.enqueueAnalysis({ subreddit: r.partitionKey, id: r.rowKey, created_utc: r.createdUtc });
+      // The bare id plus kind — the analyzer re-derives the row key and blob
+      // name. Passing the prefixed key would relabel comments as submissions.
+      await store.enqueueAnalysis({
+        subreddit: r.partitionKey, id: idFromRowKey(r.rowKey), created_utc: r.createdUtc, kind
+      });
+      if (kind === 'comment') comments++;
       enqueued++;
     }
-    context.log(`reanalyze: enqueued ${enqueued}, current ${skipped}, target v${force ? 'ALL' : minVersion}`);
-    return { jsonBody: { enqueued, alreadyCurrent: skipped, currentSchemaVersion: SCHEMA_VERSION } };
+    context.log(`reanalyze: enqueued ${enqueued} (${comments} comments), current ${skipped}, target v${force ? 'ALL' : minVersion}`);
+    return {
+      jsonBody: {
+        enqueued, comments, alreadyCurrent: skipped, currentSchemaVersion: SCHEMA_VERSION,
+        note: 'Comments remain subject to COMMENT_ANALYZE_POLICY; under ingest-only they are re-enqueued and dropped without a model call.'
+      }
+    };
   }
 });

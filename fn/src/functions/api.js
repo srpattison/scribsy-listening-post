@@ -8,6 +8,7 @@
 
 const { app } = require('@azure/functions');
 const store = require('../lib/store');
+const config = require('../lib/config');
 const { askCorpus, embedTexts, b64ToVec, cosine } = require('../lib/aoai');
 
 const VIEWS = ['meta', 'heatmap', 'stance', 'distributions', 'features', 'minbar', 'trust', 'cohort', 'quotes', 'personas', 'brief', 'competitors', 'resonance', 'signals', 'discovery'];
@@ -25,6 +26,10 @@ async function health() {
     rowsTotal: counts.total ?? null,
     rowsAnalyzed: counts.analyzed ?? null,
     rowsUnanalyzed: counts.unanalyzed ?? null,
+    submissions: counts.posts ?? null,
+    comments: counts.comments ?? null,
+    commentAnalyzePolicy: config.commentAnalyzePolicy(),
+    commentCorpus: (rollup && rollup.commentCorpus) || null,
     analyzeQueueDepth: depth,
     lastRollupAt: (rollup && rollup.finishedAt) || null,
     lastRollupOk: rollup ? rollup.ok : null,
@@ -67,7 +72,12 @@ function rowToExport(r) {
   try { a = r.analysisJson ? JSON.parse(r.analysisJson) : null; } catch { /* skip */ }
   return {
     subreddit: r.partitionKey, id: r.rowKey, title: r.title, author: r.author,
-    score: r.score, numComments: r.numComments, createdUtc: r.createdUtc,
+    // `kind` is absent on pre-round-4 rows and reads as a submission (§3a.2).
+    kind: store.kindOf(r), linkId: r.linkId || null, parentId: r.parentId || null,
+    // Capture-time snapshot from Arctic Shift with variable per-row lag. Named
+    // so no consumer mistakes it for a current value, and never ranked on.
+    scoreAtCapture: r.score, numCommentsAtCapture: r.numComments,
+    createdUtc: r.createdUtc,
     permalink: r.permalink, flair: r.flair, schemaVersion: r.schemaVersion || 1,
     emb: r.emb || '', analysis: a
   };
@@ -106,10 +116,13 @@ app.http('ask', {
     } catch (e) {
       context.warn(`semantic retrieval unavailable, falling back to score rank: ${e.message}`);
     }
-    const sample = (ranked || pool.sort((a, b) => (b.score || 0) - (a.score || 0)))
+    // Fallback ordering when embeddings are unavailable is RECENCY, not
+    // engagement: `score` is a capture-time snapshot with variable per-row lag
+    // and must not rank anything (§3c).
+    const sample = (ranked || pool.sort((a, b) => (b.createdUtc || 0) - (a.createdUtc || 0)))
       .slice(0, 300)
       .map((r) => ({
-        permalink: r.permalink, subreddit: r.subreddit, score: r.score,
+        permalink: r.permalink, subreddit: r.subreddit, kind: r.kind,
         stance: r.analysis.stance_on_ai, basis: r.analysis.stance_basis,
         experience: r.analysis.persona && r.analysis.persona.experience,
         topics: r.analysis.topics, summary: r.analysis.summary,

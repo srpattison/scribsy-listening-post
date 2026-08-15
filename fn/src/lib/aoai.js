@@ -177,16 +177,20 @@ Rules:
 - summary: two sentences, neutral register.`;
 
 async function analyzePost(post, comments) {
+  // Engagement counts are deliberately NOT in the prompt. They are an Arctic
+  // Shift capture-time snapshot with variable per-row lag, so showing them to
+  // the model invites it to reason from what is mostly archiver timing (§3c).
   const commentBlock = comments
-    .map((c, i) => `[comment ${i + 1}, score ${c.score}] ${c.body}`)
+    .map((c, i) => `[comment ${i + 1}] ${c.body}`)
     .join('\n')
     .slice(0, 8000);
+  const kindLabel = post.kind === 'comment' ? 'COMMENT' : 'POST';
   const src = post.source === 'bluesky'
     ? `BLUESKY (query stream: ${post.subreddit})`
     : `REDDIT r/${post.subreddit}`;
   const user = `SOURCE: ${src}
 TITLE: ${post.title}
-POST (score ${post.score}, ${post.num_comments} comments/replies):
+${kindLabel}:
 ${(post.selftext || '(link/image post — no body)').slice(0, 6000)}
 
 TOP COMMENTS:

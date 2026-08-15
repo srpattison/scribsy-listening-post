@@ -98,6 +98,56 @@ reasserts the `SUBREDDITS`/`SUB_TAGS` defaults unless overridden via env.
   quote), trust_signals (builds/breaks + quote), feature_requests
   (ai_related flag + quote).
 
+## What the corpus is — and what it is not
+
+**Submissions and comments.** Reddit posts are announcements and questions;
+comments are where writers reason, disagree, and reveal deal-breakers. Both are
+ingested. Every row carries `kind` (`post` | `comment`); comments also carry
+`linkId` and `parentId` so threads can be reconstructed. Rows written before
+comment support read as `post` — no migration required.
+
+Comment **ingest** and comment **analysis** are decoupled. Comments are archived
+to blob unconditionally (the archive window is the perishable resource), but
+analysis is gated by `COMMENT_ANALYZE_POLICY`, which ships as **`ingest-only`**:
+zero comment analysis runs until it is explicitly widened. Comment volume runs
+10–40× submissions, so the policy is set from a measurement, never a guess —
+`POST /api/rollupNow` reports `commentCorpus.wouldSelect`, a counted dry run of
+the policy predicate over ingested comments that issues no model calls.
+
+Queue a comment walk explicitly; it is never started automatically:
+
+```bash
+curl -s -X POST "$API/api/backfill?sub=writing&months=12&kind=comments&code=$KEY"
+```
+
+**Engagement numbers are not signal.** Arctic Shift captures a near-creation
+snapshot and never backfills, and its capture lag varies per row — 35% of sampled
+rows sit at `score` 1, 32% at 0 comments. That is not a uniform freeze that would
+be obviously useless; it is a partial freeze that *looks* like genuine variance,
+with lag that plausibly correlates with subreddit size and archive era. So
+nothing weights, ranks, sorts or thresholds on it. The columns are kept as
+stored metadata and surfaced as `scoreAtCapture` / `numCommentsAtCapture`, and
+any surface showing them labels them "at archive capture, not current."
+
+Where ranking is genuinely needed it is **corpus-derived**: how often a row's
+claims recur across *distinct threads*. A concern raised in twenty threads
+outranks one raised in a single popular one.
+
+**Sampling frames are never pooled.** Reddit general subs are the
+population-representative primary. Enclave subs (`SUB_TAGS`) are deliberately
+skewed. Bluesky streams (`BSKY_STREAMS`) carry a `kind`: `topic` streams are
+keyword searches *on the subject under study* and cannot answer population
+questions; `community` streams (`#WriterSky`, `#BookSky`, `#WritingCommunity`)
+are the unfiltered writer baseline and are never keyword-gated at ingest.
+Pooling a topic-selected stream with a population stream would manufacture the
+exact answer the loud-minority question is asking for.
+
+**Configuration fails loudly.** `SUBREDDITS`, `SUB_TAGS` and `BSKY_STREAMS` have
+no in-code defaults. If one is unset the app raises a named error rather than
+falling back — a stale copy of live config in code is how a system ends up
+confidently ingesting the wrong corpus. The subreddit list exists in exactly one
+place in this repo: `deploy.sh`.
+
 ## Failure isolation
 
 The rollup builds fifteen insight sections. Each one owns its own `try/catch`:

@@ -10,10 +10,11 @@
   },
   "extensions": {
     "queues": {
-      "batchSize": 4,
-      "newBatchThreshold": 2,
+      "_comment": "batchSize is a COST control, not a throughput one. The analyze function spends nearly all of its wall-clock awaiting AOAI, and Flex Consumption bills instance memory x wall-clock. At batchSize 4 each instance held only 4 in-flight model calls and idled on I/O wait for the rest of every instance-second, which is why compute ($191.86) ran ~2x the model spend ($97.30) on a workload whose only real work is calling a model. Raising concurrency overlaps the waits so the same work costs materially fewer instance-seconds. Measured 2026-08-15; record before/after cost-per-item.",
+      "batchSize": 16,
+      "newBatchThreshold": 8,
       "maxDequeueCount": 3,
-      "visibilityTimeout": "00:02:00"
+      "visibilityTimeout": "00:05:00"
     }
   },
   "functionTimeout": "00:09:00",

@@ -522,22 +522,31 @@ function renderCohort(c) {
   $('#cohortTiles').innerHTML = [
     { v: pct(c.negPostShare || 0), l: 'of AI posts are hostile/wary (OPs)' },
     { v: pct(c.negAuthorShare || 0), l: 'of distinct authors lean negative' },
-    { v: pct(c.negEngagementShare || 0), l: 'of engagement goes to negative posts' },
+    { v: pct(c.negThreadShare || 0), l: 'of distinct threads carry a negative voice' },
     { v: pct(c.hiIntensityNegShare || 0), l: 'of negative posts are max intensity' }
   ].map((t) => `<div class="tile"><div class="v">${esc(t.v)}</div><div class="l">${esc(t.l)}</div></div>`).join('');
   renderBars('#basisBars', topN(c.basisCounts, 8));
   renderBars('#commentBars', topN(c.commentStanceTotals, 6));
-  const noteBits = [];
+  const frameLabel = (name) => ({
+    bluesky: 'Bluesky (PR lens, skews anti-AI)',
+    'bluesky-topic': 'Bluesky topic streams (AI-keyword selected — cannot answer population questions)',
+    'bluesky-community': 'Bluesky community streams (unfiltered writer sample)',
+    'bluesky-untagged': 'Bluesky streams not listed in BSKY_STREAMS',
+    'reddit-enclave-pro': 'Pro-AI enclave subs',
+    'reddit-enclave-anti': 'Anti-AI enclave subs',
+    'reddit-enclave-satire': 'Satire subs'
+  }[name] || name);
+  const bits = [];
   for (const [name, f] of Object.entries(c.frames || {})) {
     if (name === 'reddit' || !f.aiPosts) continue;
-    const label = name === 'bluesky' ? 'Bluesky (PR lens, skews anti-AI)'
-      : name === 'reddit-enclave-pro' ? 'Pro-AI enclave subs'
-      : name === 'reddit-enclave-anti' ? 'Anti-AI enclave subs' : name;
-    noteBits.push(`${label}: ${(f.negPostShare * 100).toFixed(0)}% negative OPs across ${f.aiPosts} posts`);
+    bits.push(`${frameLabel(name)}: ${(f.negPostShare * 100).toFixed(0)}% negative OPs across ${f.aiPosts} posts`);
   }
-  $('#frameNote').textContent = noteBits.length
-    ? `Comparison frames (never pooled into the tiles): ${noteBits.join(' · ')}.`
-    : '';
+  $('#frameNote').innerHTML = (bits.length
+    ? `Comparison frames (never pooled into the tiles): ${esc(bits.join(' · '))}.`
+    : '')
+    + `<div class="sub" style="margin-top:6px;">Shares are computed from stance and distinct-thread spread. Reddit
+       <em>score</em> and <em>comment counts</em> are an archive snapshot taken near posting time with variable
+       per-row lag — they are stored as “at archive capture, not current” and rank nothing here.</div>`;
 }
 
 function renderMinbar(m) {

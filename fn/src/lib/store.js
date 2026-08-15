@@ -7,6 +7,7 @@ const { TableClient } = require('@azure/data-tables');
 const { BlobServiceClient, BlobSASPermissions } = require('@azure/storage-blob');
 const { QueueClient } = require('@azure/storage-queue');
 const tablesafe = require('./tablesafe');
+const { rowKeyFor, kindOf } = require('./rowkeys');
 
 const CONN = () => process.env.AzureWebJobsStorage;
 
@@ -42,10 +43,14 @@ function swallowExists(e) {
   if (e.statusCode !== 409) throw e;
 }
 
-// Upsert post metadata. Returns true if the post is NEW (needs analysis).
+// Upsert a corpus item (submission or comment). Returns true if NEW.
+//
+// `score` / `numComments` are still stored, but they are a CAPTURE-TIME
+// snapshot from Arctic Shift with variable per-row lag — read paths surface
+// them as scoreAtCapture / numCommentsAtCapture and nothing ranks on them.
 async function upsertPost(post) {
   const table = postsTable();
-  const key = { partitionKey: post.subreddit.toLowerCase(), rowKey: post.id };
+  const key = { partitionKey: post.subreddit.toLowerCase(), rowKey: rowKeyFor(post) };
   let isNew = false;
   try {
     await table.getEntity(key.partitionKey, key.rowKey);
@@ -57,13 +62,24 @@ async function upsertPost(post) {
     {
       ...key,
       source: post.source || 'reddit',
-      title: post.title.slice(0, 500),
+      kind: post.kind || 'post',
+      title: String(post.title || '').slice(0, 500),
       author: post.author,
       score: post.score,
       numComments: post.num_comments,
       createdUtc: post.created_utc,
       permalink: post.permalink,
       flair: post.flair || '',
+      // Thread reconstruction for comments (§3a.3).
+      linkId: post.linkId || undefined,
+      parentId: post.parentId || undefined,
+      // Cheap triage columns so the comment-analysis policy can be evaluated as
+      // a dry run over the table, with zero blob reads and zero model calls.
+      bodyChars: post.kind === 'comment' ? String(post.selftext || '').length : undefined,
+      aiPrefilterHit: post.kind === 'comment' ? !!post.aiPrefilterHit : undefined,
+      // Discovery input is extracted at INGEST for comments, because comment
+      // analysis is gated and may never run (§3a.7).
+      subMentionsCsv: post.kind === 'comment' ? String(post.subMentionsCsv || '') : undefined,
       analyzed: isNew ? false : undefined
     },
     'Merge'
@@ -75,7 +91,9 @@ async function saveRaw(post, comments) {
   const blobSvc = BlobServiceClient.fromConnectionString(CONN());
   const container = blobSvc.getContainerClient(RAW_CONTAINER);
   const day = new Date(post.created_utc * 1000).toISOString().slice(0, 10);
-  const name = `${post.subreddit.toLowerCase()}/${day}/${post.id}.json`;
+  // Comments archive under the same prefixed key as their table row, so the
+  // full text is re-analyzable later under a changed policy (§3a.5).
+  const name = `${post.subreddit.toLowerCase()}/${day}/${rowKeyFor(post)}.json`;
   const body = JSON.stringify({ post, comments }, null, 0);
   await container.getBlockBlobClient(name).upload(body, Buffer.byteLength(body), {
     blobHTTPHeaders: { blobContentType: 'application/json' }
@@ -98,7 +116,17 @@ async function enqueueBackfill(job, delaySeconds = 0) {
   });
 }
 
-async function saveAnalysis(subreddit, postId, analysis, { embB64 = '', schemaVersion = 0, subMentionsCsv = '' } = {}) {
+// One corpus row by id (submissions only — used to resolve a comment's parent).
+async function getPostRow(subreddit, postId) {
+  try {
+    return await postsTable().getEntity(subreddit.toLowerCase(), postId);
+  } catch (e) {
+    if (e.statusCode === 404) return null;
+    throw e;
+  }
+}
+
+async function saveAnalysis(subreddit, postId, analysis, { embB64 = '', schemaVersion = 0, subMentionsCsv = '', kind = 'post' } = {}) {
   // analysisJson gets its own property budget and is shrunk by dropping whole
   // fields, never by slicing the encoded string — a sliced JSON string parses
   // as garbage and silently drops the row from every aggregate downstream.
@@ -109,7 +137,8 @@ async function saveAnalysis(subreddit, postId, analysis, { embB64 = '', schemaVe
   await postsTable().upsertEntity(
     {
       partitionKey: subreddit.toLowerCase(),
-      rowKey: postId,
+      rowKey: rowKeyFor({ id: postId, kind }),
+      kind,
       analyzed: true,
       schemaVersion,
       emb,
@@ -139,13 +168,41 @@ async function listAnalyzedPosts() {
 // this account, so the analysis backlog was unobservable from the CLI — the app
 // has to report its own counts.
 async function countPosts() {
-  let total = 0, analyzed = 0;
-  const iter = postsTable().listEntities({ queryOptions: { select: ['RowKey', 'analyzed'] } });
+  let total = 0, analyzed = 0, posts = 0, comments = 0;
+  const iter = postsTable().listEntities({ queryOptions: { select: ['RowKey', 'analyzed', 'kind'] } });
   for await (const e of iter) {
     total++;
     if (e.analyzed === true) analyzed++;
+    if (kindOf(e) === 'comment') comments++; else posts++;
   }
-  return { total, analyzed, unanalyzed: total - analyzed };
+  return { total, analyzed, unanalyzed: total - analyzed, posts, comments };
+}
+
+// Comment rows with only the triage columns needed to evaluate the analysis
+// policy as a DRY RUN — no bodies, no blobs, no model calls (§3b).
+async function listCommentTriage() {
+  const rows = [];
+  const iter = postsTable().listEntities({
+    queryOptions: {
+      filter: "kind eq 'comment'",
+      select: ['PartitionKey', 'RowKey', 'linkId', 'bodyChars', 'aiPrefilterHit', 'analyzed', 'subMentionsCsv', 'createdUtc']
+    }
+  });
+  for await (const e of iter) rows.push(e);
+  return rows;
+}
+
+// aiRelated by submission id, for the "parent is AI-related" half of the policy
+// predicate and for nothing else.
+async function analyzedPostAiFlags() {
+  const map = new Map();
+  const iter = postsTable().listEntities({
+    queryOptions: { filter: 'analyzed eq true', select: ['RowKey', 'aiRelated', 'kind'] }
+  });
+  for await (const e of iter) {
+    if (kindOf(e) === 'post') map.set(e.rowKey, !!e.aiRelated);
+  }
+  return map;
 }
 
 async function queueDepth(name = ANALYZE_QUEUE) {
@@ -203,10 +260,10 @@ async function getAggregate(metric, period) {
   return r.ok ? r.value : { error: r.error, failedAt: e.updatedAt || null };
 }
 
-async function getRaw(subreddit, createdUtc, postId) {
+async function getRaw(subreddit, createdUtc, postId, kind = 'post') {
   const blobSvc = BlobServiceClient.fromConnectionString(CONN());
   const day = new Date(createdUtc * 1000).toISOString().slice(0, 10);
-  const name = `${subreddit.toLowerCase()}/${day}/${postId}.json`;
+  const name = `${subreddit.toLowerCase()}/${day}/${rowKeyFor({ id: postId, kind })}.json`;
   const blob = blobSvc.getContainerClient(RAW_CONTAINER).getBlockBlobClient(name);
   const dl = await blob.downloadToBuffer();
   return JSON.parse(dl.toString('utf8'));
@@ -237,8 +294,13 @@ module.exports = {
   enqueueBackfill,
   saveAnalysis,
   listAnalyzedPosts,
+  listCommentTriage,
+  analyzedPostAiFlags,
+  getPostRow,
   countPosts,
   queueDepth,
+  rowKeyFor,
+  kindOf,
   saveAggregate,
   getAggregate,
   listAggregates,
