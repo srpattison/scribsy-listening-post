@@ -37,8 +37,16 @@ async function admitPost(context, post, comments, counters) {
 
 async function ingestRedditArctic(context, counters) {
   const minComments = parseInt(process.env.MIN_COMMENTS_FOR_FETCH || '3', 10);
+  const { requestBackfill } = require('./backfill');
   for (const sub of subreddits()) {
     try {
+      // New-sub detection: a sub with no backfill history gets its archive
+      // walk queued automatically — adding to SUBREDDITS is the only step.
+      const bfStatus = await store.getAggregate('backfill-status', sub.toLowerCase());
+      if (!bfStatus) {
+        const r = await requestBackfill(sub, 12);
+        if (r.queued) context.log(`new subreddit detected — backfill queued for r/${sub}`);
+      }
       const wmKey = `reddit:${sub.toLowerCase()}`;
       const from = (await getWatermark(wmKey)) - OVERLAP_SECONDS;
       let after = from, newest = from, pages = 0;

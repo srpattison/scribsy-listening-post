@@ -14,7 +14,13 @@ ingestion runs on two open sources with deliberately different jobs:
 | Frame | Source | Job | Bias to remember |
 |---|---|---|---|
 | Deep / lagged | **Arctic Shift** (free Reddit archive; lags live by days–weeks) | Strategy questions: deal-breakers, trust, personas, cohort | Hobbyist/aspiring, outspoken |
-| Fast / skewed | **Bluesky** open AppView API (real-time query streams) | Momentum signals, PR radar, flashpoints | Literary/professional, skews anti-AI |
+| Fast / skewed | **Bluesky** authenticated XRPC via the PDS (real-time query streams) | Momentum signals, PR radar, flashpoints | Literary/professional, skews anti-AI |
+
+Bluesky requires an app password (`BSKY_IDENTIFIER` + `BSKY_APP_PASSWORD` at
+deploy time): the unauthenticated AppView CDN (public.api.bsky.app) 403s
+datacenter egress IPs (verified from both Azure and GCP, Aug 2026), while the
+PDS (bsky.social) serves authenticated datacenter traffic normally. Use an app
+password from Settings → App Passwords, never the account password.
 
 **Frames are never pooled for population-level claims** — the rollup computes
 the cohort per frame (Reddit = primary), and the strategy brief is instructed
@@ -48,7 +54,7 @@ insights API (function-key auth) ◄── Static Web App dashboard
 ```
 
 Resources (RG `scribsy-listening`, eastus; SWA in eastus2): storage
-`scribsylisten2026`, functions `scribsy-listen-fn-2026` (Node 24, consumption),
+`scribsylisten2026`, functions `scribsy-listen-fn-2026` (Node 22, Flex Consumption),
 AOAI `scribsy-aoai-2026` (deployment `chat`), SWA `scribsy-insights`. App
 Insights `scribsy-listen-fn-2026-ai` wired to the existing `scribsy-logs`
 workspace. Secret copies land in `scribsy-kv-2026`.
@@ -65,8 +71,9 @@ workspace. Secret copies land in `scribsy-kv-2026`.
    cap): `curl -X POST 'https://scribsy-listen-fn-2026.azurewebsites.net/api/rollupNow?code=<key>'`
    — thereafter the daily timers keep everything fresh.
 
-Idempotent — safe to re-run; re-running also redeploys code (new zip → new
-`WEBSITE_RUN_FROM_PACKAGE`).
+Idempotent — safe to re-run; re-running also redeploys code (`func azure
+functionapp publish`; Flex manages its own deployment container). Re-running
+reasserts the `SUBREDDITS`/`SUB_TAGS` defaults unless overridden via env.
 
 ## Research layer
 

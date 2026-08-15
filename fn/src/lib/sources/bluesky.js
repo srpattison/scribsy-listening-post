@@ -1,15 +1,60 @@
 'use strict';
 
-// Bluesky adapter — public AppView API, open by AT Protocol design (no key, no
-// approval). This is the REAL-TIME frame: PR radar and flashpoint detection.
+// Bluesky adapter — authenticated XRPC via the PDS. This is the REAL-TIME
+// frame: PR radar and flashpoint detection.
+//
+// WHY AUTHENTICATED (verified empirically 2026-08-15): the unauthenticated
+// AppView CDN (public.api.bsky.app, BunnyCDN-fronted) returns 403 to
+// datacenter egress IPs — both Azure and GCP. The PDS (bsky.social) serves
+// datacenter IPs normally (probed: 200, ratelimit 3000/5min), and proxies
+// read endpoints to the AppView when called with a session token. So this
+// adapter logs in with an app password and calls everything through the PDS.
+// Settings: BSKY_IDENTIFIER (handle or email), BSKY_APP_PASSWORD (app
+// password from Settings → App Passwords — NEVER the account password),
+// BSKY_SERVICE (default https://bsky.social).
+//
 // SAMPLING NOTE (do not delete): the Bluesky writing community skews
 // literary/professional and anti-AI relative to the general writer population.
 // Rows from this source must never be pooled into population-level claims —
 // rollup and the strategy brief treat it as a separate frame.
 
-const BASE = () => (process.env.BLUESKY_BASE || 'https://public.api.bsky.app').replace(/\/+$/, '');
+const BASE = () => (process.env.BSKY_SERVICE || process.env.BLUESKY_BASE || 'https://bsky.social').replace(/\/+$/, '');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// ---- session (module-cached; recreated on cold start or 401) ----
+let session = null; // { accessJwt, expiresAt }
+
+function credentials() {
+  const id = process.env.BSKY_IDENTIFIER;
+  const pw = process.env.BSKY_APP_PASSWORD;
+  if (!id || !pw) {
+    throw new Error('bluesky disabled: BSKY_IDENTIFIER / BSKY_APP_PASSWORD not configured (app password required — unauthenticated AppView blocks datacenter IPs)');
+  }
+  return { id, pw };
+}
+
+async function createSession() {
+  const { id, pw } = credentials();
+  const res = await fetch(`${BASE()}/xrpc/com.atproto.server.createSession`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'User-Agent': userAgent() },
+    body: JSON.stringify({ identifier: id, password: pw })
+  });
+  if (!res.ok) throw new Error(`bluesky createSession failed: ${res.status} ${(await res.text()).slice(0, 300)}`);
+  const data = await res.json();
+  session = { accessJwt: data.accessJwt, expiresAt: Date.now() + 60 * 60 * 1000 }; // refresh hourly
+  return session;
+}
+
+async function getToken() {
+  if (session && session.expiresAt > Date.now()) return session.accessJwt;
+  return (await createSession()).accessJwt;
+}
+
+function userAgent() {
+  return 'scribsy-listening-post/1.0 (market research; steven@scribsy.ai)';
+}
 
 // Default query streams. Override with BLUESKY_STREAMS app setting
 // (JSON: [{ "name": "bsky-writing-ai", "q": "writing AI" }, ...]).
@@ -31,14 +76,21 @@ function streams() {
   return DEFAULT_STREAMS;
 }
 
-async function apiGet(path, params) {
+async function apiGet(path, params, isRetry = false) {
   const url = new URL(BASE() + '/xrpc/' + path);
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
   }
   await sleep(400);
-  const res = await fetch(url, { headers: { 'User-Agent': 'scribsy-listening-post/1.0 (market research; steven@scribsy.ai)' } });
-  if (res.status === 429) { await sleep(20_000); return apiGet(path, params); }
+  const token = await getToken();
+  const res = await fetch(url, {
+    headers: { 'User-Agent': userAgent(), Authorization: `Bearer ${token}` }
+  });
+  if (res.status === 401 && !isRetry) {
+    session = null; // token expired server-side — re-login once
+    return apiGet(path, params, true);
+  }
+  if (res.status === 429) { await sleep(20_000); return apiGet(path, params, isRetry); }
   if (!res.ok) throw new Error(`Bluesky ${path} failed: ${res.status} ${(await res.text()).slice(0, 300)}`);
   return res.json();
 }

@@ -13,6 +13,7 @@ const POSTS_TABLE = 'posts';
 const AGG_TABLE = 'aggregates';
 const RAW_CONTAINER = 'raw';
 const ANALYZE_QUEUE = 'analyze-jobs';
+const BACKFILL_QUEUE = 'backfill-jobs';
 
 function postsTable() {
   return TableClient.fromConnectionString(CONN(), POSTS_TABLE);
@@ -23,6 +24,9 @@ function aggTable() {
 function analyzeQueue() {
   return new QueueClient(CONN(), ANALYZE_QUEUE);
 }
+function backfillQueue() {
+  return new QueueClient(CONN(), BACKFILL_QUEUE);
+}
 
 async function ensureInfra() {
   await postsTable().createTable().catch(swallowExists);
@@ -30,6 +34,7 @@ async function ensureInfra() {
   const blobSvc = BlobServiceClient.fromConnectionString(CONN());
   await blobSvc.getContainerClient(RAW_CONTAINER).createIfNotExists();
   await analyzeQueue().createIfNotExists();
+  await backfillQueue().createIfNotExists();
 }
 
 function swallowExists(e) {
@@ -85,7 +90,14 @@ async function enqueueAnalysis(job, delaySeconds = 0) {
   });
 }
 
-async function saveAnalysis(subreddit, postId, analysis, { embB64 = '', schemaVersion = 0 } = {}) {
+async function enqueueBackfill(job, delaySeconds = 0) {
+  const q = backfillQueue();
+  await q.sendMessage(Buffer.from(JSON.stringify(job)).toString('base64'), {
+    visibilityTimeout: delaySeconds || undefined
+  });
+}
+
+async function saveAnalysis(subreddit, postId, analysis, { embB64 = '', schemaVersion = 0, subMentionsCsv = '' } = {}) {
   await postsTable().upsertEntity(
     {
       partitionKey: subreddit.toLowerCase(),
@@ -93,6 +105,7 @@ async function saveAnalysis(subreddit, postId, analysis, { embB64 = '', schemaVe
       analyzed: true,
       schemaVersion,
       emb: embB64,
+      subMentionsCsv,
       analysisJson: JSON.stringify(analysis).slice(0, 30_000),
       aiRelated: !!analysis.ai_related,
       stance: analysis.stance_on_ai || 'na',
@@ -177,6 +190,7 @@ module.exports = {
   upsertPost,
   saveRaw,
   enqueueAnalysis,
+  enqueueBackfill,
   saveAnalysis,
   listAnalyzedPosts,
   saveAggregate,
@@ -184,5 +198,6 @@ module.exports = {
   listAggregates,
   getRaw,
   writeExport,
-  ANALYZE_QUEUE
+  ANALYZE_QUEUE,
+  BACKFILL_QUEUE
 };

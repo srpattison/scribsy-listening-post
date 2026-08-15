@@ -12,9 +12,12 @@
 # the dormant OAuth adapter takes over live Reddit ingestion.
 # Run:  bash deploy.sh          (add BACKFILL=1 to kick historical backfill)
 #
-# Day-1 gotchas applied: Microsoft.Web provider registration; Node 24 (20 is
-# EOL-rejected); run-from-package via SAS blob URL (Kudu config-zip 400s on
-# fresh apps).
+# Provisioning gotchas applied: Microsoft.Web provider registration; FLEX
+# Consumption only (Linux Consumption 400s on this subscription — see
+# claude/flex-recreate-method-2026-08-15.md); Core Tools publish with
+# --javascript; SWA in eastus2 (not offered in eastus).
+# NOTE: re-running reasserts SUBREDDITS/SUB_TAGS defaults unless you pass env
+# overrides — if the live list has drifted, export SUBREDDITS first (see runbook).
 # ============================================================================
 set -euo pipefail
 
@@ -31,7 +34,11 @@ CORE_RG="scribsy-core"
 LOGS_WS="scribsy-logs"                   # existing Log Analytics workspace
 CHAT_MODEL="${CHAT_MODEL:-gpt-5-mini}"   # verified available Aug 2026 (retires 2027-02-06)
 CHAT_MODEL_VERSION="${CHAT_MODEL_VERSION:-2025-08-07}"  # alternatives: az cognitiveservices account list-models -n $AOAI -g $RG -o table
-SUBREDDITS="writing,writers,nanowrimo,WritingWithAI,selfpublish,fantasywriters,scifiwriting,PubTips,KeepWriting,writingadvice"
+SUBREDDITS="${SUBREDDITS:-writing,writers,nanowrimo,WritingWithAI,selfpublish,fantasywriters,scifiwriting,PubTips,KeepWriting,writingadvice,AIWritingLounge,NewAuthor,FictionWriting}"
+# Frame tags: skewed enclave subs are excluded from the population cohort and
+# reported as comparison frames. JSON map sub → enclave-pro | enclave-anti.
+SUB_TAGS_DEFAULT='{"WritingWithAI":"enclave-pro","AIWritingLounge":"enclave-pro"}'
+SUB_TAGS="${SUB_TAGS:-$SUB_TAGS_DEFAULT}"
 
 # Optional — only used if REDDIT_MODE=oauth after an approved registration
 REDDIT_CLIENT_ID="${REDDIT_CLIENT_ID:-}"
@@ -51,9 +58,7 @@ echo "== storage =="
 az storage account show -n "$ST" -g "$RG" -o none 2>/dev/null || \
   az storage account create -n "$ST" -g "$RG" -l "$LOC" --sku Standard_LRS --kind StorageV2 -o none
 STCONN=$(az storage account show-connection-string -n "$ST" -g "$RG" -o tsv)
-for c in raw pkg; do
-  az storage container create -n "$c" --connection-string "$STCONN" -o none
-done
+az storage container create -n raw --connection-string "$STCONN" -o none
 # tables + queue are created by the app on first run (ensureInfra), but pre-create anyway
 az storage table create -n posts --connection-string "$STCONN" -o none || true
 az storage table create -n aggregates --connection-string "$STCONN" -o none || true
@@ -89,11 +94,15 @@ az monitor app-insights component show --app "${FN}-ai" -g "$RG" -o none 2>/dev/
     ${WS_ID:+--workspace "$WS_ID"} -o none
 AI_CONN=$(az monitor app-insights component show --app "${FN}-ai" -g "$RG" --query connectionString -o tsv)
 
-echo "== function app (Linux consumption, Node 24) =="
+echo "== function app (FLEX consumption, Node 22) =="
+# NEVER Linux Consumption (--consumption-plan-location): on this subscription it
+# consistently 400s from Kudu/config-zip, sync-triggers, keys list, and function
+# list. Flex fixed it first try, twice (2026-08-15, see
+# claude/flex-recreate-method-2026-08-15.md). Node 22 is the Flex-verified runtime.
 az functionapp show -n "$FN" -g "$RG" -o none 2>/dev/null || \
   az functionapp create -n "$FN" -g "$RG" -s "$ST" \
-    --consumption-plan-location "$LOC" --os-type Linux \
-    --runtime node --runtime-version 24 --functions-version 4 -o none
+    --flexconsumption-location "$LOC" \
+    --runtime node --runtime-version 22 -o none
 
 echo "== app settings =="
 az functionapp config appsettings set -n "$FN" -g "$RG" -o none --settings \
@@ -103,12 +112,15 @@ az functionapp config appsettings set -n "$FN" -g "$RG" -o none --settings \
   "REDDIT_CLIENT_SECRET=$REDDIT_CLIENT_SECRET" \
   "REDDIT_USER_AGENT=azure:scribsy-listening-post:1.0 (research contact steven@scribsy.ai)" \
   "ARCTIC_BASE=https://arctic-shift.photon-reddit.com" \
-  "BLUESKY_BASE=https://public.api.bsky.app" \
+  "BSKY_SERVICE=https://bsky.social" \
+  "BSKY_IDENTIFIER=${BSKY_IDENTIFIER:-}" \
+  "BSKY_APP_PASSWORD=${BSKY_APP_PASSWORD:-}" \
   "AOAI_ENDPOINT=$AOAI_ENDPOINT" \
   "AOAI_KEY=$AOAI_KEY" \
   "AOAI_DEPLOYMENT=chat" \
   "EMBED_DEPLOYMENT=embed" \
   "SUBREDDITS=$SUBREDDITS" \
+  "SUB_TAGS=$SUB_TAGS" \
   "DAILY_ANALYZE_CAP=1500" \
   "MIN_COMMENTS_FOR_FETCH=3" \
   "BRAIN_CAPTURE_URL=${BRAIN_CAPTURE_URL:-}"
@@ -118,20 +130,19 @@ az keyvault secret set --vault-name "$KV" -n aoai-listening-key --value "$AOAI_K
   echo "  (kv write skipped — vault $KV unreachable; key still lives in app settings)"
 [ -n "$REDDIT_CLIENT_SECRET" ] && az keyvault secret set --vault-name "$KV" -n reddit-client-secret --value "$REDDIT_CLIENT_SECRET" -o none || true
 
-echo "== package + run-from-package deploy =="
+echo "== publish code (Core Tools; Flex manages its own deployment container) =="
+# Do NOT set WEBSITE_RUN_FROM_PACKAGE on Flex and do not manage a package blob —
+# Flex provisions app-package-<name>-<id> itself. The --javascript flag is
+# REQUIRED (no local.settings.json here => "Can't determine project language").
 cd "$(dirname "$0")/fn"
 npm install --omit=dev --no-audit --no-fund
-zip -qr /tmp/listen-fn.zip host.json package.json src node_modules
-az storage blob upload --connection-string "$STCONN" -c pkg -f /tmp/listen-fn.zip \
-  -n "listen-fn-$(date +%Y%m%d%H%M).zip" --overwrite -o none
-BLOB=$(az storage blob list --connection-string "$STCONN" -c pkg --query "sort_by([?contains(name,'listen-fn')],&properties.lastModified)[-1].name" -o tsv)
-EXPIRY=$(date -u -d "+2 years" +%Y-%m-%dT%H:%MZ 2>/dev/null || date -u -v+2y +%Y-%m-%dT%H:%MZ)
-SAS=$(az storage blob generate-sas --connection-string "$STCONN" -c pkg -n "$BLOB" \
-  --permissions r --expiry "$EXPIRY" -o tsv)
-az functionapp config appsettings set -n "$FN" -g "$RG" -o none --settings \
-  "WEBSITE_RUN_FROM_PACKAGE=https://${ST}.blob.core.windows.net/pkg/${BLOB}?${SAS}"
-az functionapp restart -n "$FN" -g "$RG" -o none
+ls node_modules/@azure >/dev/null || { echo "!! npm install produced no @azure deps — aborting publish"; exit 1; }
+func azure functionapp publish "$FN" --javascript 2>&1 | tail -8
 cd - >/dev/null
+sleep 20
+echo "== functions indexed (expect 12) =="
+az functionapp function list -g "$RG" -n "$FN" --query "[].name" -o tsv || \
+  echo "!! function list failed — investigate before proceeding"
 
 echo "== static web app =="
 az staticwebapp show -n "$SWA" -g "$RG" -o none 2>/dev/null || \

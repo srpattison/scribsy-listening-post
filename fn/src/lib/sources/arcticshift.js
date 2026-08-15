@@ -15,7 +15,7 @@ async function apiGet(path, params) {
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, String(v));
   }
-  await sleep(600);
+  await sleep(1000); // gentle: several backfill chunk-workers may run in parallel
   const res = await fetch(url, { headers: { 'User-Agent': 'scribsy-listening-post/1.0 (market research; steven@scribsy.ai)' } });
   if (res.status === 429) {
     const reset = parseInt(res.headers.get('X-RateLimit-Reset') || '30', 10);

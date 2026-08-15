@@ -10,7 +10,7 @@ const { app } = require('@azure/functions');
 const store = require('../lib/store');
 const { askCorpus, embedTexts, b64ToVec, cosine } = require('../lib/aoai');
 
-const VIEWS = ['meta', 'heatmap', 'stance', 'distributions', 'features', 'minbar', 'trust', 'cohort', 'quotes', 'personas', 'brief', 'competitors', 'resonance', 'signals'];
+const VIEWS = ['meta', 'heatmap', 'stance', 'distributions', 'features', 'minbar', 'trust', 'cohort', 'quotes', 'personas', 'brief', 'competitors', 'resonance', 'signals', 'discovery'];
 
 app.http('insights', {
   methods: ['GET'],

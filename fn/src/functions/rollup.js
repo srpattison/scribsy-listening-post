@@ -43,7 +43,8 @@ function parseRows(rows) {
         tools: (a.tools_mentioned || []).map((t) =>
           typeof t === 'string' ? { tool: t, sentiment: 'neutral', switching: false, context: '' } : t),
         quote: a.notable_quote || '',
-        summary: a.summary || ''
+        summary: a.summary || '',
+        subMentions: r.subMentionsCsv ? r.subMentionsCsv.split(',').filter(Boolean) : []
       };
     })
     .filter(Boolean);
@@ -173,14 +174,27 @@ async function runRollup(context) {
       basisByStance
     };
   }
+  // Frame assignment: bluesky is its own frame; Reddit subs split by SUB_TAGS
+  // (app setting, JSON map sub → "enclave-pro" | "enclave-anti"; unlisted subs
+  // are "general"). Enclave subs are deliberately skewed communities — kept as
+  // comparison frames so adding them never shifts the population numbers.
+  let subTags = {};
+  try { subTags = JSON.parse(process.env.SUB_TAGS || '{}'); } catch { /* ignore bad JSON */ }
+  const tagOf = (r) => {
+    if (r.source === 'bluesky') return 'bluesky';
+    const t = subTags[r.subreddit] || subTags[Object.keys(subTags).find((k) => k.toLowerCase() === r.subreddit) || ''];
+    return t ? `reddit-${t}` : 'reddit';
+  };
   const frames = {};
-  for (const src of [...new Set(aiRows.map((r) => r.source))]) {
-    frames[src] = computeCohort(aiRows.filter((r) => r.source === src));
+  for (const r of aiRows) {
+    const f = tagOf(r);
+    (frames[f] = frames[f] || []).push(r);
   }
-  // Primary frame = reddit (population-representative); top-level fields keep
-  // the dashboard contract and always describe the primary frame.
+  for (const f of Object.keys(frames)) frames[f] = computeCohort(frames[f]);
+  // Primary frame = reddit GENERAL subs (population-representative); top-level
+  // fields keep the dashboard contract and always describe the primary frame.
   const primary = frames.reddit || frames[Object.keys(frames)[0]] || computeCohort([]);
-  const cohort = { ...primary, primaryFrame: frames.reddit ? 'reddit' : Object.keys(frames)[0] || 'none', frames };
+  const cohort = { ...primary, primaryFrame: frames.reddit ? 'reddit (general subs)' : Object.keys(frames)[0] || 'none', frames };
 
   // ---- Feature requests: LLM-normalize into canonical groups ----
   const rawFeatures = [];
@@ -309,6 +323,29 @@ async function runRollup(context) {
   }
   const signals = { week: nowWeek, spikes: spikes.sort((a, b) => b.ratio - a.ratio), computedAt: new Date().toISOString() };
 
+  // ---- Subreddit discovery: candidate subs cited by tracked communities ----
+  const tracked = new Set(
+    (process.env.SUBREDDITS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
+  );
+  for (const r of rows) tracked.add(r.subreddit); // anything we already ingest
+  const NOISE = new Set(['all', 'askreddit', 'popular', 'funny', 'pics', 'memes', 'aita', 'amitheasshole']);
+  const mentionCounts = {}, mentionedBy = {};
+  for (const r of rows) {
+    for (const m of r.subMentions) {
+      if (tracked.has(m) || NOISE.has(m)) continue;
+      count(mentionCounts, m);
+      (mentionedBy[m] = mentionedBy[m] || new Set()).add(r.subreddit);
+    }
+  }
+  const discovery = {
+    candidates: Object.entries(mentionCounts)
+      .filter(([, n]) => n >= 3)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 40)
+      .map(([name, n]) => ({ sub: name, mentions: n, citedBy: [...mentionedBy[name]].slice(0, 6) })),
+    note: 'Subs cited >=3 times by tracked communities and not yet ingested. Vet before adding: writer-side? active? enclave tag needed?'
+  };
+
   // ---- Standing-questions strategy brief (LLM, grounded in the aggregates) ----
   let brief = null;
   try {
@@ -352,6 +389,7 @@ async function runRollup(context) {
   await store.saveAggregate('competitors', 'latest', competitors);
   await store.saveAggregate('resonance', 'latest', resonance);
   await store.saveAggregate('signals', 'latest', signals);
+  await store.saveAggregate('discovery', 'latest', discovery);
   if (brief) await store.saveAggregate('brief', 'latest', brief);
 
   // ---- Dated snapshot: trend lines over the answers themselves ----

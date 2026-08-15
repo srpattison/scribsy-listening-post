@@ -4,7 +4,7 @@
   "description": "Scribsy Listening Post — Reddit writer-sentiment ingestion, AOAI analysis, insights API",
   "main": "src/functions/*.js",
   "engines": {
-    "node": ">=24"
+    "node": ">=22"
   },
   "scripts": {
     "start": "func start"

@@ -167,6 +167,9 @@
       <h2>Momentum signals</h2>
       <p class="sub">Topics running hot this week vs their trailing 4-week average — PR moments and emerging concerns. Spikes are auto-filed to the Brain.</p>
       <div id="signals"></div>
+      <h3 style="font-size:13px;margin:16px 0 2px;">Candidate subreddits</h3>
+      <p class="sub" style="margin-bottom:6px;">Communities cited by the ones we track but not yet ingested. Vet, then add via the runbook.</p>
+      <div id="discovery"></div>
     </section>
 
     <div class="cols">
@@ -341,6 +344,7 @@ function render(data) {
   renderTiles(meta, data);
   renderBrief(data.brief);
   renderSignals(data.signals);
+  renderDiscovery(data.discovery);
   renderCompetitors(data.competitors);
   renderResonance(data.resonance);
   renderCohort(data.cohort);
@@ -380,6 +384,16 @@ function renderSignals(s) {
         <span class="chip">×${x.ratio}</span>
       </div>`).join('')
     : `<p class="sub">No topics spiking this week${s && s.week ? ` (${esc(s.week)})` : ''} — baseline chatter only.</p>`;
+}
+
+function renderDiscovery(d) {
+  const cands = (d && d.candidates) || [];
+  $('#discovery').innerHTML = cands.slice(0, 12).map((c) => `
+    <div class="barrow">
+      <div class="name"><a href="https://www.reddit.com/r/${esc(c.sub)}" target="_blank" rel="noopener">r/${esc(c.sub)}</a></div>
+      <div style="font-size:11.5px;color:var(--ink-2);">cited by ${(c.citedBy || []).map((s) => esc(s)).join(', ')}</div>
+      <div class="n">${c.mentions}</div>
+    </div>`).join('') || '<p class="sub">No candidates yet — populates as analysis drains.</p>';
 }
 
 function renderCompetitors(c) {
@@ -431,9 +445,16 @@ function renderCohort(c) {
   ].map((t) => `<div class="tile"><div class="v">${esc(t.v)}</div><div class="l">${esc(t.l)}</div></div>`).join('');
   renderBars('#basisBars', topN(c.basisCounts, 8));
   renderBars('#commentBars', topN(c.commentStanceTotals, 6));
-  const bsky = c.frames && c.frames.bluesky;
-  $('#frameNote').textContent = bsky && bsky.aiPosts
-    ? `Bluesky frame for comparison: ${(bsky.negPostShare * 100).toFixed(0)}% negative OPs across ${bsky.aiPosts} posts — expected to skew anti-AI by community composition; read as PR climate, not population.`
+  const noteBits = [];
+  for (const [name, f] of Object.entries(c.frames || {})) {
+    if (name === 'reddit' || !f.aiPosts) continue;
+    const label = name === 'bluesky' ? 'Bluesky (PR lens, skews anti-AI)'
+      : name === 'reddit-enclave-pro' ? 'Pro-AI enclave subs'
+      : name === 'reddit-enclave-anti' ? 'Anti-AI enclave subs' : name;
+    noteBits.push(`${label}: ${(f.negPostShare * 100).toFixed(0)}% negative OPs across ${f.aiPosts} posts`);
+  }
+  $('#frameNote').textContent = noteBits.length
+    ? `Comparison frames (never pooled into the tiles): ${noteBits.join(' · ')}.`
     : '';
 }
 
