@@ -6,6 +6,7 @@
 const { TableClient } = require('@azure/data-tables');
 const { BlobServiceClient, BlobSASPermissions } = require('@azure/storage-blob');
 const { QueueClient } = require('@azure/storage-queue');
+const tablesafe = require('./tablesafe');
 
 const CONN = () => process.env.AzureWebJobsStorage;
 
@@ -98,15 +99,23 @@ async function enqueueBackfill(job, delaySeconds = 0) {
 }
 
 async function saveAnalysis(subreddit, postId, analysis, { embB64 = '', schemaVersion = 0, subMentionsCsv = '' } = {}) {
+  // analysisJson gets its own property budget and is shrunk by dropping whole
+  // fields, never by slicing the encoded string — a sliced JSON string parses
+  // as garbage and silently drops the row from every aggregate downstream.
+  // The embedding lives in its own property (`emb`) so it can never crowd
+  // analysisJson out of the property cap.
+  const packed = tablesafe.packProperty(analysis);
+  const emb = embB64 && embB64.length <= tablesafe.MAX_PROP_CHARS ? embB64 : '';
   await postsTable().upsertEntity(
     {
       partitionKey: subreddit.toLowerCase(),
       rowKey: postId,
       analyzed: true,
       schemaVersion,
-      emb: embB64,
-      subMentionsCsv,
-      analysisJson: JSON.stringify(analysis).slice(0, 30_000),
+      emb,
+      subMentionsCsv: String(subMentionsCsv).slice(0, 2000),
+      analysisTruncated: packed.dropped.length ? packed.dropped.join(',') : '',
+      analysisJson: packed.json,
       aiRelated: !!analysis.ai_related,
       stance: analysis.stance_on_ai || 'na',
       experience: (analysis.persona && analysis.persona.experience) || 'unknown',
@@ -126,16 +135,45 @@ async function listAnalyzedPosts() {
   return rows;
 }
 
+// Drain-rate observability. `az storage queue metadata show` returns nothing on
+// this account, so the analysis backlog was unobservable from the CLI — the app
+// has to report its own counts.
+async function countPosts() {
+  let total = 0, analyzed = 0;
+  const iter = postsTable().listEntities({ queryOptions: { select: ['RowKey', 'analyzed'] } });
+  for await (const e of iter) {
+    total++;
+    if (e.analyzed === true) analyzed++;
+  }
+  return { total, analyzed, unanalyzed: total - analyzed };
+}
+
+async function queueDepth(name = ANALYZE_QUEUE) {
+  try {
+    const q = new QueueClient(CONN(), name);
+    const props = await q.getProperties();
+    return props.approximateMessagesCount ?? null;
+  } catch {
+    return null; // never let a health probe take down the API
+  }
+}
+
+// Chunked, size-guarded write. See lib/tablesafe.js — the previous
+// `.slice(0, 60_000)` blew the 32,768-character property ceiling, which is what
+// aborted the rollup at its first large section.
 async function saveAggregate(metric, period, payload) {
+  const { props, dropped } = tablesafe.packJson(payload);
   await aggTable().upsertEntity(
     {
       partitionKey: metric,
       rowKey: period,
-      json: JSON.stringify(payload).slice(0, 60_000),
+      ...props,
+      truncated: dropped.length ? dropped.join(',') : '',
       updatedAt: new Date().toISOString()
     },
-    'Replace'
+    'Replace' // Replace (not Merge) so stale chunk properties never linger
   );
+  return { dropped };
 }
 
 async function listAggregates(metric) {
@@ -144,19 +182,25 @@ async function listAggregates(metric) {
     queryOptions: { filter: `PartitionKey eq '${metric}'` }
   });
   for await (const e of iter) {
-    try { out.push({ period: e.rowKey, ...JSON.parse(e.json) }); } catch { /* skip */ }
+    const r = tablesafe.unpackJson(e);
+    // One corrupt row must not silently vanish, nor abort the listing.
+    out.push(r.ok ? { period: e.rowKey, ...r.value } : { period: e.rowKey, error: r.error });
   }
   return out.sort((a, b) => (a.period < b.period ? -1 : 1));
 }
 
 async function getAggregate(metric, period) {
+  let e;
   try {
-    const e = await aggTable().getEntity(metric, period);
-    return JSON.parse(e.json);
-  } catch (e) {
-    if (e.statusCode === 404) return null;
-    throw e;
+    e = await aggTable().getEntity(metric, period);
+  } catch (err) {
+    if (err.statusCode === 404) return null;
+    throw err;
   }
+  const r = tablesafe.unpackJson(e);
+  // Surface corruption as a named error rather than throwing: the dashboard
+  // renders `error` as "unavailable", which beats taking down the caller.
+  return r.ok ? r.value : { error: r.error, failedAt: e.updatedAt || null };
 }
 
 async function getRaw(subreddit, createdUtc, postId) {
@@ -193,6 +237,8 @@ module.exports = {
   enqueueBackfill,
   saveAnalysis,
   listAnalyzedPosts,
+  countPosts,
+  queueDepth,
   saveAggregate,
   getAggregate,
   listAggregates,

@@ -28,11 +28,20 @@ async function getWatermark(key) {
 const setWatermark = (key, utc) => store.saveAggregate('watermark', key, { utc });
 
 async function admitPost(context, post, comments, counters) {
-  const isNew = await store.upsertPost(post);
-  if (!isNew) return;
-  await store.saveRaw(post, comments);
-  await store.enqueueAnalysis({ subreddit: post.subreddit, id: post.id, created_utc: post.created_utc });
-  counters.enqueued++;
+  // Per-post isolation: one malformed or unstorable post must not abandon the
+  // rest of the sub's page — that would strand the watermark and silently stop
+  // ingesting that sub. Same disease as the rollup's missing section guards.
+  try {
+    const isNew = await store.upsertPost(post);
+    if (!isNew) return;
+    await store.saveRaw(post, comments);
+    await store.enqueueAnalysis({ subreddit: post.subreddit, id: post.id, created_utc: post.created_utc });
+    counters.enqueued++;
+  } catch (e) {
+    counters.postErrors = (counters.postErrors || 0) + 1;
+    if (!counters.firstPostError) counters.firstPostError = `${post && post.id}: ${e.message}`;
+    context.warn(`admit failed for ${post && post.subreddit}/${post && post.id}: ${e.message}`);
+  }
 }
 
 async function ingestRedditArctic(context, counters) {
@@ -65,7 +74,9 @@ async function ingestRedditArctic(context, counters) {
         if (posts.length < 100) break;
       }
       await setWatermark(wmKey, newest);
+      counters.subsWatermarked.push(sub);
     } catch (e) {
+      counters.subsFailed.push({ sub, error: e.message });
       context.error(`arctic ingest r/${sub} failed: ${e.message}`);
     }
   }
@@ -113,19 +124,39 @@ async function ingestBluesky(context, counters) {
       }
       await setWatermark(wmKey, newest);
     } catch (e) {
+      (counters.streamsFailed = counters.streamsFailed || []).push({ stream: stream.name, error: e.message });
       context.error(`bluesky ingest ${stream.name} failed: ${e.message}`);
     }
   }
 }
 
 async function runIngest(context, { pagesPerSub = 2 } = {}) {
+  const startedMs = Date.now();
   await store.ensureInfra();
-  const counters = { discovered: 0, enqueued: 0 };
+  const counters = {
+    discovered: 0, enqueued: 0, postErrors: 0, firstPostError: null,
+    subsAttempted: 0, subsWatermarked: [], subsFailed: []
+  };
   const mode = process.env.REDDIT_MODE || 'arctic';
-  if (mode === 'oauth') await ingestRedditOauth(context, counters, pagesPerSub);
-  else if (mode !== 'off') await ingestRedditArctic(context, counters);
-  await ingestBluesky(context, counters);
-  context.log(`ingest done: ${counters.discovered} seen, ${counters.enqueued} new enqueued`);
+  counters.subsAttempted = subreddits().length;
+  // Each frame is isolated: a total Reddit outage must not skip Bluesky.
+  if (mode === 'oauth') {
+    try { await ingestRedditOauth(context, counters, pagesPerSub); }
+    catch (e) { context.error(`reddit oauth frame failed: ${e.message}`); counters.redditFrameError = e.message; }
+  } else if (mode !== 'off') {
+    try { await ingestRedditArctic(context, counters); }
+    catch (e) { context.error(`reddit arctic frame failed: ${e.message}`); counters.redditFrameError = e.message; }
+  }
+  try { await ingestBluesky(context, counters); }
+  catch (e) { context.error(`bluesky frame failed: ${e.message}`); counters.blueskyFrameError = e.message; }
+
+  counters.durationMs = Date.now() - startedMs;
+  counters.ok = counters.subsFailed.length === 0 && !counters.redditFrameError && !counters.blueskyFrameError;
+  context.log(
+    `ingest done: ${counters.discovered} seen, ${counters.enqueued} new enqueued, ` +
+    `${counters.subsWatermarked.length}/${counters.subsAttempted} subs watermarked, ` +
+    `${counters.subsFailed.length} subs failed, ${counters.postErrors} post errors`
+  );
   return counters;
 }
 
@@ -141,7 +172,13 @@ app.http('ingestNow', {
   authLevel: 'function',
   handler: async (request, context) => {
     const pages = parseInt(new URL(request.url).searchParams.get('pages') || '2', 10);
-    const result = await runIngest(context, { pagesPerSub: Math.min(pages, 10) });
-    return { jsonBody: result };
+    // Same contract as rollupNow: always a readable JSON body, never empty.
+    try {
+      const result = await runIngest(context, { pagesPerSub: Math.min(pages, 10) });
+      return { status: result.ok ? 200 : 207, jsonBody: result };
+    } catch (e) {
+      context.error(`ingest aborted: ${e.message}`);
+      return { status: 500, jsonBody: { ok: false, error: e.message, failedAt: new Date().toISOString() } };
+    }
   }
 });

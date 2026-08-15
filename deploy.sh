@@ -34,10 +34,14 @@ CORE_RG="scribsy-core"
 LOGS_WS="scribsy-logs"                   # existing Log Analytics workspace
 CHAT_MODEL="${CHAT_MODEL:-gpt-5-mini}"   # verified available Aug 2026 (retires 2027-02-06)
 CHAT_MODEL_VERSION="${CHAT_MODEL_VERSION:-2025-08-07}"  # alternatives: az cognitiveservices account list-models -n $AOAI -g $RG -o table
-SUBREDDITS="${SUBREDDITS:-writing,writers,nanowrimo,WritingWithAI,selfpublish,fantasywriters,scifiwriting,PubTips,KeepWriting,writingadvice,AIWritingLounge,NewAuthor,FictionWriting}"
+# Live sub list as of 2026-08-15 (22). This default MUST track the live app
+# setting: deploy.sh reasserts it on every run, so a stale default here silently
+# reverts subs and destroys their in-flight backfills. Export SUBREDDITS to
+# override (see the runbook's `CUR=$(az functionapp config appsettings list …)`).
+SUBREDDITS="${SUBREDDITS:-writing,writers,nanowrimo,WritingWithAI,selfpublish,fantasywriters,scifiwriting,PubTips,KeepWriting,writingadvice,AIWritingLounge,NewAuthor,FictionWriting,FanFiction,AO3,eroticauthors,BetaReaders,DestructiveReaders,worldbuilding,Screenwriting,writingcirclejerk,selfpublishing}"
 # Frame tags: skewed enclave subs are excluded from the population cohort and
-# reported as comparison frames. JSON map sub → enclave-pro | enclave-anti.
-SUB_TAGS_DEFAULT='{"WritingWithAI":"enclave-pro","AIWritingLounge":"enclave-pro"}'
+# reported as comparison frames. JSON map sub → enclave-pro | enclave-anti | enclave-satire.
+SUB_TAGS_DEFAULT='{"WritingWithAI":"enclave-pro","AIWritingLounge":"enclave-pro","writingcirclejerk":"enclave-satire"}'
 SUB_TAGS="${SUB_TAGS:-$SUB_TAGS_DEFAULT}"
 
 # Optional — only used if REDDIT_MODE=oauth after an approved registration
@@ -121,7 +125,7 @@ az functionapp config appsettings set -n "$FN" -g "$RG" -o none --settings \
   "EMBED_DEPLOYMENT=embed" \
   "SUBREDDITS=$SUBREDDITS" \
   "SUB_TAGS=$SUB_TAGS" \
-  "DAILY_ANALYZE_CAP=1500" \
+  "DAILY_ANALYZE_CAP=${DAILY_ANALYZE_CAP:-12000}" \
   "MIN_COMMENTS_FOR_FETCH=3" \
   "BRAIN_CAPTURE_URL=${BRAIN_CAPTURE_URL:-}"
 

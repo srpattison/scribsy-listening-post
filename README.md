@@ -98,6 +98,35 @@ reasserts the `SUBREDDITS`/`SUB_TAGS` defaults unless overridden via env.
   quote), trust_signals (builds/breaks + quote), feature_requests
   (ai_related flag + quote).
 
+## Failure isolation
+
+The rollup builds fifteen insight sections. Each one owns its own `try/catch`:
+a section that throws writes `{ error, failedAt }` into its own row and the run
+continues to the next. No single section can prevent a later one from being
+written, and no single malformed row can abort the section it appears in —
+per-row parses are guarded and counted (`rowsSkipped`).
+
+- **`POST /api/rollupNow`** always returns a JSON summary, never an empty body:
+  `{ ok, sectionsWritten, sectionsFailed: [{name, error}], rowsScanned,
+  rowsAnalyzed, rowsSkipped, durationMs }`. It answers `207` when some sections
+  failed, so a partial run is distinguishable from a clean one.
+- **`GET /api/insights?view=health`** reports `rowsAnalyzed`, `rowsUnanalyzed`,
+  `analyzeQueueDepth`, `lastRollupAt` and `lastRollupSectionsFailed`. The
+  storage CLI cannot read this account's queue depth, so the app reports its own
+  drain rate.
+- **The dashboard distinguishes "failed" from "empty."** A section whose row is
+  absent or carries `error` renders an explicit *unavailable — rollup failed*
+  state plus a banner counting the dead sections. A confidently-empty dashboard
+  is the failure mode this design exists to prevent.
+
+Aggregates are written through a size guard: Azure Table Storage caps a String
+property at 64 KiB of UTF-16 (32,768 characters), so large payloads are split
+across numbered chunk properties and reassembled on read. A payload too large
+even for that is shrunk *deliberately* — largest field dropped first, recorded
+in `_truncated` — rather than sliced into unparseable JSON.
+
+Run the unit tests with `cd fn && npm test` (Node's built-in runner, no deps).
+
 ## Extensibility layer (v3)
 
 - **Schema versioning + re-analysis**: every row is stamped with the

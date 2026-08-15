@@ -12,6 +12,30 @@ const { askCorpus, embedTexts, b64ToVec, cosine } = require('../lib/aoai');
 
 const VIEWS = ['meta', 'heatmap', 'stance', 'distributions', 'features', 'minbar', 'trust', 'cohort', 'quotes', 'personas', 'brief', 'competitors', 'resonance', 'signals', 'discovery'];
 
+// Self-reported drain rate + last-rollup outcome. The CLI cannot read this
+// account's queue depth (`az storage queue metadata show` returns nothing), so
+// the analysis backlog is only observable if the app reports it.
+async function health() {
+  const [counts, depth, rollup] = await Promise.all([
+    store.countPosts().catch((e) => ({ error: e.message })),
+    store.queueDepth().catch(() => null),
+    store.getAggregate('rollup-health', 'latest').catch((e) => ({ error: e.message }))
+  ]);
+  return {
+    rowsTotal: counts.total ?? null,
+    rowsAnalyzed: counts.analyzed ?? null,
+    rowsUnanalyzed: counts.unanalyzed ?? null,
+    analyzeQueueDepth: depth,
+    lastRollupAt: (rollup && rollup.finishedAt) || null,
+    lastRollupOk: rollup ? rollup.ok : null,
+    lastRollupDurationMs: (rollup && rollup.durationMs) ?? null,
+    lastRollupSectionsWritten: (rollup && rollup.sectionsWritten) || [],
+    lastRollupSectionsFailed: (rollup && rollup.sectionsFailed) || [],
+    lastRollupRowsSkipped: (rollup && rollup.rowsSkipped) ?? null,
+    checkedAt: new Date().toISOString()
+  };
+}
+
 app.http('insights', {
   methods: ['GET'],
   authLevel: 'function',
@@ -21,13 +45,17 @@ app.http('insights', {
       // Dated history of the aggregates themselves — trend lines over the answers.
       return { jsonBody: { snapshots: await store.listAggregates('snapshot') } };
     }
+    if (view === 'health') {
+      return { jsonBody: await health(), headers: { 'Cache-Control': 'no-store' } };
+    }
     if (view === 'all') {
       const out = {};
       for (const v of VIEWS) out[v] = await store.getAggregate(v, 'latest');
+      out.health = await health();
       return { jsonBody: out, headers: { 'Cache-Control': 'public, max-age=300' } };
     }
     if (!VIEWS.includes(view)) {
-      return { status: 400, jsonBody: { error: `view must be one of ${VIEWS.join(', ')} or all` } };
+      return { status: 400, jsonBody: { error: `view must be one of ${VIEWS.join(', ')}, health, snapshots, or all` } };
     }
     const data = await store.getAggregate(view, 'latest');
     return { jsonBody: data || {}, headers: { 'Cache-Control': 'public, max-age=300' } };

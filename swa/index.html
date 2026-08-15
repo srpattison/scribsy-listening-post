@@ -108,6 +108,14 @@
   #setup input { width: 100%; margin: 6px 0 12px; }
   #setup button { background: var(--brand-teal); color: #fff; border: 0; border-radius: 6px; padding: 8px 16px; cursor: pointer; }
   .err { color: #d03b3b; font-size: 13px; }
+  /* A section that failed must never look like a section with no data. */
+  .unavail { border: 1px solid #d03b3b; border-left-width: 3px; border-radius: 6px; padding: 10px 12px; background: rgba(208, 59, 59, 0.06); }
+  .unavail strong { color: #d03b3b; font-size: 12.5px; display: block; margin-bottom: 3px; }
+  .unavail .sub { margin: 0; font-size: 11.5px; }
+  .unavail code { font-size: 11px; }
+  .healthbar { border: 1px solid #d03b3b; border-radius: 8px; padding: 12px 14px; margin-bottom: 18px; background: rgba(208, 59, 59, 0.06); }
+  .healthbar strong { color: #d03b3b; display: block; font-size: 13px; margin-bottom: 4px; }
+  .healthbar .sub { margin: 0; font-size: 12px; }
   .askbtn { background: var(--brand-teal); color: #fff; border: 0; border-radius: 6px; padding: 6px 16px; cursor: pointer; font-size: 13px; }
   .qa { border-top: 1px solid var(--grid); padding: 12px 2px; }
   .qa .q { font-weight: 600; font-size: 13.5px; }
@@ -145,6 +153,7 @@
   </section>
 
   <div id="dash" hidden>
+    <div id="healthbar"></div>
     <div class="tiles" id="tiles"></div>
 
     <section class="card">
@@ -338,28 +347,100 @@ function hideTip() { tooltip.style.display = 'none'; }
 const STANCE_ORDER = ['hostile', 'wary', 'conflicted', 'curious', 'pragmatic', 'enthusiastic'];
 const stanceColor = (s) => cssVar('--st-' + s) || cssVar('--st-conflicted');
 
+/* ---------- section availability ----------
+   A section is UNAVAILABLE when its aggregate row is absent (the rollup never
+   got that far) or carries an `error` (the rollup recorded a failure there).
+   Neither is the same as "no data yet", and rendering them as empty is what
+   hid twelve dead sections behind a confident-looking dashboard all day. */
+function sectionProblem(v) {
+  if (v === null || v === undefined) return { kind: 'missing' };
+  if (typeof v === 'object' && v.error) return { kind: 'error', error: v.error, failedAt: v.failedAt };
+  if (typeof v === 'object' && Object.keys(v).length === 0) return { kind: 'missing' };
+  return null;
+}
+
+function renderUnavailable(sels, problem) {
+  const detail = problem.kind === 'missing'
+    ? 'The last rollup never wrote this section.'
+    : `The last rollup failed here: ${esc(problem.error)}`;
+  const when = problem.failedAt ? ` · ${new Date(problem.failedAt).toLocaleString()}` : '';
+  sels.forEach((sel, i) => {
+    const el = $(sel);
+    if (!el) return;
+    el.innerHTML = i === 0
+      ? `<div class="unavail">
+           <strong>Unavailable — rollup failed</strong>
+           <p class="sub">${detail}${when}</p>
+           <p class="sub">This is not an empty result. Check <code>/api/insights?view=health</code>.</p>
+         </div>`
+      : '';
+  });
+}
+
+// Render a section, or its explicit failure state. Returns true if it rendered.
+function section(key, sels, value, fn) {
+  const problem = sectionProblem(value);
+  if (problem) {
+    renderUnavailable(sels, problem);
+    return { key, problem };
+  }
+  try {
+    fn(value);
+  } catch (e) {
+    renderUnavailable(sels, { kind: 'error', error: `dashboard render failed: ${e.message}` });
+    return { key, problem: { kind: 'error', error: e.message } };
+  }
+  return null;
+}
+
+function renderHealthBar(data, problems) {
+  const h = data.health || {};
+  const failed = (h.lastRollupSectionsFailed || []).map((f) => f.name);
+  const names = [...new Set([...problems.map((p) => p.key), ...failed])];
+  if (!names.length) { $('#healthbar').innerHTML = ''; return; }
+  const backlog = (h.rowsUnanalyzed ?? null) !== null
+    ? ` ${h.rowsUnanalyzed.toLocaleString()} of ${(h.rowsTotal || 0).toLocaleString()} rows still unanalyzed.`
+    : '';
+  const when = h.lastRollupAt ? ` Last rollup ${new Date(h.lastRollupAt).toLocaleString()}.` : '';
+  $('#healthbar').innerHTML = `
+    <div class="healthbar">
+      <strong>${names.length} of 15 sections unavailable</strong>
+      <p class="sub">${names.map((n) => esc(n)).join(', ')} — shown below as failures, not as empty results.${when}${backlog}</p>
+    </div>`;
+}
+
 /* ---------- render ---------- */
 function render(data) {
   const meta = data.meta || {};
+  const problems = [];
+  const track = (r) => { if (r) problems.push(r); };
+
   renderTiles(meta, data);
-  renderBrief(data.brief);
-  renderSignals(data.signals);
-  renderDiscovery(data.discovery);
-  renderCompetitors(data.competitors);
-  renderResonance(data.resonance);
-  renderCohort(data.cohort);
-  renderMinbar(data.minbar);
-  renderTrust(data.trust);
-  renderHeatmap(data.heatmap);
-  renderStance(data.stance);
-  renderPersonas(data.personas);
-  const board = data.features?.featureBoard || [];
-  renderBars('#featuresAi', board.filter((f) => f.aiRelated).map((f) => ({ name: f.feature, n: f.count, extra: f.examples })), true);
-  renderBars('#features', board.filter((f) => !f.aiRelated).map((f) => ({ name: f.feature, n: f.count, extra: f.examples })), true);
-  const dist = data.distributions || {};
-  renderBars('#pains', topN(dist.painCounts, 10));
-  renderBars('#tools', topN(dist.toolCounts, 10));
-  renderQuotes(data.quotes?.quotes || [], data.heatmap?.topics || []);
+  track(section('brief', ['#brief'], data.brief, renderBrief));
+  track(section('signals', ['#signals'], data.signals, renderSignals));
+  track(section('discovery', ['#discovery'], data.discovery, renderDiscovery));
+  track(section('competitors', ['#competitors'], data.competitors, renderCompetitors));
+  track(section('resonance', ['#resonance'], data.resonance, renderResonance));
+  track(section('cohort', ['#cohortTiles', '#basisBars', '#commentBars', '#frameNote'], data.cohort, renderCohort));
+  track(section('minbar', ['#baseline', '#dealbreakers'], data.minbar, renderMinbar));
+  track(section('trust', ['#trustBreaks', '#trustBuilds'], data.trust, renderTrust));
+  track(section('heatmap', ['#heatmap'], data.heatmap, renderHeatmap));
+  track(section('stance', ['#stance'], data.stance, renderStance));
+  track(section('personas', ['#personas'], data.personas, renderPersonas));
+  track(section('features', ['#featuresAi', '#features'], data.features, (f) => {
+    const board = f.featureBoard || [];
+    renderBars('#featuresAi', board.filter((x) => x.aiRelated).map((x) => ({ name: x.feature, n: x.count, extra: x.examples })), true);
+    renderBars('#features', board.filter((x) => !x.aiRelated).map((x) => ({ name: x.feature, n: x.count, extra: x.examples })), true);
+  }));
+  track(section('distributions', ['#pains', '#tools'], data.distributions, (dist) => {
+    renderBars('#pains', topN(dist.painCounts, 10));
+    renderBars('#tools', topN(dist.toolCounts, 10));
+  }));
+  track(section('quotes', ['#quotes'], data.quotes, (q) => {
+    renderQuotes(q.quotes || [], (data.heatmap && data.heatmap.topics) || []);
+  }));
+
+  renderHealthBar(data, problems);
   $('#updated').textContent = meta.updatedAt ? `updated ${new Date(meta.updatedAt).toLocaleString()}` : '';
 }
 
@@ -372,6 +453,7 @@ function renderBrief(brief) {
       ${a.caveats ? `<div class="cav">Caveats: ${esc(a.caveats)}</div>` : ''}
       ${(a.evidence || []).slice(0, 3).map((e) => `<div class="ev">“${esc(e)}”</div>`).join('')}
     </div>`).join('') || '<p class="sub">No brief yet — runs with the first rollup.</p>';
+  $('#brief').insertAdjacentHTML('afterbegin', staleNote(brief));
 }
 
 function renderSignals(s) {
@@ -601,6 +683,17 @@ function renderPersonas(p) {
       <div class="win"><strong>What wins them:</strong> ${esc(x.what_would_win_them)}</div>
       <div class="quote">“${esc(x.representative_quote)}”</div>
     </div>`).join('') || '<p class="sub">No personas yet — run the rollup after analysis completes.</p>';
+  $('#personas').insertAdjacentHTML('afterbegin', staleNote(p));
+}
+
+// Personas and the brief fall back to the last good synthesis when AOAI fails.
+// That is deliberate, but it must never pass as fresh.
+function staleNote(v) {
+  if (!v || !v._stale) return '';
+  return `<div class="unavail" style="margin-bottom:10px;">
+    <strong>Showing the previous run</strong>
+    <p class="sub">Regeneration failed: ${esc(v._staleReason || 'unknown')}</p>
+  </div>`;
 }
 
 function renderBars(sel, items, withExamples) {
