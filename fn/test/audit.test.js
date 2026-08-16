@@ -330,6 +330,24 @@ test('§8m: runAuditChunk persists a report via saveAggregate BEFORE returning, 
   assert.strictEqual(persisted.authorConcentration.totalAuthors, 1, 'table-only checks must be present in the persisted report');
 });
 
+test('§9: the audit is zero-model-call — a spy store never sees enqueueAnalysis or any AOAI entry point', async () => {
+  const calls = { enqueueAnalysis: 0 };
+  const storeImpl = fakeAuditStore({
+    rows: [{ partitionKey: 'writing', author: 'a', analyzed: true, aiRelated: true, stance: 'curious', week: '2026-W10', rowKey: 'x' }],
+    analyzedRows: [{ partitionKey: 'writing', rowKey: 'x', createdUtc: 1_760_000_000, analysisJson: '{}' }]
+  });
+  storeImpl.enqueueAnalysis = async () => { calls.enqueueAnalysis++; };
+  await runAuditChunk({ chunkSize: 2000 }, noopContext, { storeImpl, registryImpl: fakeRegistry });
+  assert.strictEqual(calls.enqueueAnalysis, 0, 'the audit must never enqueue analysis — it is read-only by construction');
+
+  const fs = require('node:fs');
+  for (const mod of ['../src/lib/audit.js', '../src/lib/audit-worker.js', '../src/functions/audit.js']) {
+    const src = fs.readFileSync(require.resolve(mod), 'utf8');
+    assert.ok(!src.includes("require('./aoai')") && !src.includes("require('../lib/aoai')"),
+      `${mod} must not import the AOAI client module at all — zero model calls is structural, not just untriggered`);
+  }
+});
+
 test('§8m: runAuditChunk reports capped:false→true resumability and advances the cursor across two chunks', async () => {
   const analyzedRows = Array.from({ length: 3 }, (_, i) => ({
     partitionKey: 'writing', rowKey: `r${i}`, createdUtc: 1_760_000_000 + i, analysisJson: '{}'
