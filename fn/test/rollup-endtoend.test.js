@@ -13,7 +13,7 @@ const { runRollup } = require('../src/lib/rollup-engine');
 const ALL_SECTIONS = [
   'meta', 'heatmap', 'stance', 'distributions', 'features', 'minbar', 'trust',
   'cohort', 'quotes', 'personas', 'competitors', 'resonance', 'signals',
-  'discovery', 'brief', 'snapshot'
+  'discovery', 'rules', 'brief', 'snapshot'
 ];
 
 function fakeStore(rows) {

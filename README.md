@@ -98,6 +98,68 @@ reasserts the `SUBREDDITS`/`SUB_TAGS` defaults unless overridden via env.
   quote), trust_signals (builds/breaks + quote), feature_requests
   (ai_related flag + quote).
 
+## Bot and boilerplate exclusion
+
+AutoModerator megathreads run on a schedule, so a 12-month backfill captures
+dozens of byte-identical copies per sub, each carrying the subreddit's rule
+text. A frequency-weighted aggregate reads that as writer sentiment — and
+because the repetition is *systematic* rather than random, it biases the corpus
+toward appearing anti-AI, corrupting exactly the questions this system exists to
+answer.
+
+Detection is deliberately **general**. Hardcoding one bot name catches one bot;
+writing subs also carry critique-thread bots, removal notices, and submission
+templates the subreddit injects into post bodies with no bot author at all. So
+the primary signal is **repeat-hash**: identical normalised text recurring more
+than `BOILERPLATE_MIN_REPEATS` (default 5) times within one subreddit. Author
+(`AutoModerator`), `distinguished == "moderator"` and `stickied` are cheap
+high-precision signals layered on top.
+
+Two length floors keep ordinary writing out of it — repeat-hash only applies
+above them:
+
+| Field | Floor | Why |
+|---|---|---|
+| body | 120 chars | "good luck with your draft" normalises to 25; rule text runs to hundreds |
+| title | 40 chars | writers don't independently produce the same 40+ char headline; scheduled threads do |
+
+Rows are **tagged, never deleted** — `contentClass` is `human` \| `bot` \|
+`boilerplate`, with `contentClassReason` naming the detector that fired. Every
+stance, quote, persona, trust, minbar, features, resonance, signals, cohort,
+distributions and competitors aggregate reads human rows only. `meta` reports
+human and non-human counts separately, never one blended number. The excluded
+text surfaces in its own `rules` frame: what a subreddit formally prohibits is
+real evidence about community norms — it simply is not sentiment.
+
+Clean an existing corpus with **zero model calls**:
+
+```bash
+curl -s -X POST "$API/api/retag?code=$KEY" | jq .
+```
+
+`?bodies=1` additionally hashes post bodies from the `raw` archive (opt-in: blob
+reads are Flex wall-clock, the dominant cost of this system), `?dryRun=1`
+reports without writing, and `?contamination=1` adds the read-only measurement
+described below. Nothing on any of these paths enqueues analysis.
+
+### Known limit: prompt contamination predates row-level tagging
+
+Before comment ingestion existed, comments were passed to the model as prompt
+context and were never stored on the parent row. So a genuinely human post can
+still carry contamination *inside* its `analysisJson` — a verbatim quote lifted
+from a moderator sticky, and a `comment_stance_mix` that counted bot replies as
+community stances. Tagging cannot reach that; only re-analysis can.
+
+`?contamination=1` measures the blast radius without spending anything:
+
+- **narrow** — a stored quote field matches a bot/boilerplate comment
+- **broad** — any bot/boilerplate comment was in the prompt at all
+
+Broad is the criterion that matters for `comment_stance_mix`: once a bot comment
+was in the prompt the mix is unreliable whether or not its text surfaced, so
+narrow undercounts. Both are reported per partition. Remediation is a separate,
+deliberate decision.
+
 ## What the corpus is — and what it is not
 
 **Submissions and comments.** Reddit posts are announcements and questions;

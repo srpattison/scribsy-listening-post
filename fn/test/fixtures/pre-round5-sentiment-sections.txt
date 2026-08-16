@@ -1,0 +1,340 @@
+// Extract of fn/src/lib/rollup-engine.js at 3562788 (pre-round-5).
+// Verbatim section bodies, kept ONLY so the unfiltered-rows scanner can be
+// proven capable of failing. Not loaded as a module.
+
+      name: 'heatmap',
+      build: (_r, tally) => {
+        const heat = {};
+        for (const t of TOPICS) heat[t.slug] = {};
+        forEachRow(aiRows, (r) => {
+          for (const t of r.topics) if (heat[t]) count(heat[t], r.week);
+        }, tally);
+        const heatBySub = {};
+        forEachRow(aiRows, (r) => {
+          heatBySub[r.subreddit] = heatBySub[r.subreddit] || {};
+          for (const t of r.topics) count(heatBySub[r.subreddit], t);
+        }, tally);
+        return { weeks, topics: TOPICS, heat, heatBySub };
+      }
+    },
+    {
+      name: 'stance',
+      build: (_r, tally) => {
+        const stanceByWeek = {}, stances = {};
+        forEachRow(aiRows, (r) => {
+          stanceByWeek[r.week] = stanceByWeek[r.week] || {};
+          count(stanceByWeek[r.week], r.stance);
+          count(stances, r.stance);
+        }, tally);
+        return { weeks, stanceByWeek, stances };
+      }
+    },
+    {
+      name: 'distributions',
+      build: (_r, tally) => {
+        const stances = {}, experience = {}, topicTotals = {}, toolCounts = {}, painCounts = {};
+        const stancesBySource = {};
+        forEachRow(aiRows, (r) => {
+          stancesBySource[r.source] = stancesBySource[r.source] || {};
+          count(stancesBySource[r.source], r.stance);
+          count(stances, r.stance);
+          count(experience, r.experience);
+          for (const t of r.topics) count(topicTotals, t);
+          for (const t of r.tools) count(toolCounts, String(t.tool || '').trim());
+          for (const p of r.painPoints) count(painCounts, String(p || '').toLowerCase().trim());
+        }, tally);
+        // Long tails are capped here rather than at write time: an unbounded map
+        // over every distinct pain string is what pushed this row past the
+        // Table Storage property cap and aborted the whole rollup.
+        return {
+          stances,
+          stancesBySource,
+          experience,
+          topicTotals,
+          toolCounts: topNObj(toolCounts, 400),
+          painCounts: topNObj(painCounts, 400),
+          toolCountsTotal: Object.keys(toolCounts).length,
+          painCountsTotal: Object.keys(painCounts).length
+        };
+      }
+    },
+    {
+      name: 'features',
+      build: async (_r, tally) => {
+        const rawFeatures = [];
+        forEachRow(rows, (r) => {
+          for (const f of r.features) {
+            rawFeatures.push({ name: f.feature, aiRelated: !!f.ai_related, quote: f.quote, permalink: r.permalink, subreddit: r.subreddit });
+          }
+        }, tally);
+        if (!rawFeatures.length) return { featureBoard: [] };
+        try {
+          const { groups } = await aoai.normalizeFeatures(rawFeatures.map((f) => f.name).slice(0, 400));
+          const featureBoard = groups
+            .map((g) => {
+              const members = g.members.map((i) => rawFeatures[i]).filter(Boolean);
+              const aiVotes = members.filter((m) => m.aiRelated).length;
+              return {
+                feature: g.canonical,
+                count: g.members.length,
+                aiRelated: aiVotes * 2 >= members.length && members.length > 0,
+                examples: members.slice(0, 3)
+              };
+            })
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 40);
+          return { featureBoard };
+        } catch (e) {
+          // Degrade to raw counts rather than failing the section outright.
+          context?.error?.(`feature normalization failed: ${e.message}`);
+          const featureBoard = Object.entries(
+            rawFeatures.reduce((m, f) => (count(m, String(f.name || '').toLowerCase()), m), {})
+          ).map(([feature, n]) => ({ feature, count: n, examples: [] }))
+            .sort((a, b) => b.count - a.count).slice(0, 25);
+          return { featureBoard, degraded: true, degradedReason: e.message };
+        }
+      }
+    },
+    {
+      name: 'minbar',
+      build: (_r, tally) => {
+        const baselineCounts = {}, dbByKind = {}, dbItems = {};
+        forEachRow(rows, (r) => {
+          for (const b of r.expectedBaseline) count(baselineCounts, String(b || '').toLowerCase().trim());
+          for (const d of r.dealBreakers) {
+            count(dbByKind, d.kind);
+            const k = String(d.item || '').toLowerCase().trim();
+            dbItems[k] = dbItems[k] || { item: d.item, kind: d.kind, count: 0, examples: [] };
+            dbItems[k].count++;
+            if (dbItems[k].examples.length < 3) dbItems[k].examples.push({ quote: d.quote, permalink: r.permalink, subreddit: r.subreddit });
+          }
+        }, tally);
+        return {
+          baselineCounts: topNObj(baselineCounts, 400),
+          dealBreakerBoard: Object.values(dbItems).sort((a, b) => b.count - a.count).slice(0, 30),
+          dbByKind
+        };
+      }
+    },
+    {
+      name: 'trust',
+      build: (_r, tally) => {
+        const trust = { builds: {}, breaks: {} };
+        const trustExamples = { builds: {}, breaks: {} };
+        forEachRow(rows, (r) => {
+          for (const t of r.trustSignals) {
+            if (!trust[t.direction]) continue; // unknown direction — skip, don't throw
+            const k = String(t.signal || '').toLowerCase().trim();
+            count(trust[t.direction], k);
+            trustExamples[t.direction][k] = trustExamples[t.direction][k] || [];
+            if (trustExamples[t.direction][k].length < 3) trustExamples[t.direction][k].push({ quote: t.quote, permalink: r.permalink });
+          }
+        }, tally);
+        return {
+          builds: Object.entries(trust.builds).sort((a, b) => b[1] - a[1]).slice(0, 20)
+            .map(([signal, n]) => ({ signal, count: n, examples: trustExamples.builds[signal] || [] })),
+          breaks: Object.entries(trust.breaks).sort((a, b) => b[1] - a[1]).slice(0, 20)
+            .map(([signal, n]) => ({ signal, count: n, examples: trustExamples.breaks[signal] || [] }))
+        };
+      }
+    },
+    {
+      name: 'cohort',
+      build: (_r, tally) => {
+        // Frame assignment: bluesky is its own frame; Reddit subs split by
+        // SUB_TAGS. Enclave subs are deliberately skewed communities — kept as
+        // comparison frames so adding them never shifts the population numbers.
+        // Throws if SUB_TAGS is unset: an empty tag map would silently pool
+        // deliberately skewed enclave subs into the population cohort (§9.1).
+        const subTags = config.subTags(env);
+        // Bluesky streams split by kind. `topic` streams are keyword searches ON
+        // the subject under study; `community` streams are unfiltered writer
+        // samples. Pooling them would manufacture the exact answer standing
+        // question 5 asks for, so they are separate frames (§8).
+        const streamKinds = config.bskyStreamKinds(env);
+        const tagOf = (r) => {
+          if (r.source === 'bluesky') {
+            const k = streamKinds[r.subreddit];
+            if (k === 'community') return 'bluesky-community';
+            if (k === 'topic') return 'bluesky-topic';
+            return 'bluesky-untagged'; // stream not in BSKY_STREAMS — never pooled into either
+          }
+          const t = subTags[r.subreddit] || subTags[Object.keys(subTags).find((k) => k.toLowerCase() === r.subreddit) || ''];
+          return t ? `reddit-${t}` : 'reddit';
+        };
+        const frames = {};
+        forEachRow(aiRows, (r) => {
+          const f = tagOf(r);
+          (frames[f] = frames[f] || []).push(r);
+        }, tally);
+        for (const f of Object.keys(frames)) frames[f] = computeCohort(frames[f], tally);
+        const primary = frames.reddit || frames[Object.keys(frames)[0]] || computeCohort([], tally);
+        return {
+          ...primary,
+          primaryFrame: frames.reddit ? 'reddit (general subs)' : Object.keys(frames)[0] || 'none',
+          frames,
+          frameNote: 'Frames are never pooled. Reddit general subs are the population-representative primary; enclave subs and Bluesky topic streams are keyword- or community-selected and cannot answer population questions. bluesky-community is the only unfiltered Bluesky writer sample.'
+        };
+      }
+    },
+    {
+      name: 'quotes',
+      build: (_r, tally) => {
+        const picked = [];
+        forEachRow(aiRows, (r) => { if (r.quote) picked.push(r); }, tally);
+        return {
+          quotes: picked
+            .sort(bySalience(salience))
+            .slice(0, 400)
+            .map((r) => ({
+              quote: r.quote, stance: r.stance, experience: r.experience,
+              topics: r.topics, subreddit: r.subreddit, permalink: r.permalink,
+              title: r.title, week: r.week, kind: r.kind
+            })),
+          ranking: 'recurrence across distinct threads — never Reddit engagement'
+        };
+      }
+    },
+    {
+      name: 'personas',
+      build: async (results) => {
+        const dist = results.distributions || {};
+        try {
+          const sample = aiRows
+            .slice()
+            .sort(bySalience(salience))
+            .map((r) => ({ stance: r.stance, experience: r.experience, summary: r.summary, quote: r.quote }));
+          return await aoai.synthesizePersonas(sample, {
+            total: aiRows.length,
+            stances: dist.stances || {},
+            experience: dist.experience || {},
+            topTopics: Object.entries(dist.topicTotals || {}).sort((a, b) => b[1] - a[1]).slice(0, 10)
+          });
+        } catch (e) {
+          // Keep the last good synthesis rather than blanking the panel, but
+          // mark it stale so the dashboard can say so.
+          context?.error?.(`persona synthesis failed: ${e.message}`);
+          const prev = await store.getAggregate('personas', 'latest');
+          if (prev && !prev.error) return { ...prev, _stale: true, _staleReason: e.message };
+          return { personas: [], _stale: true, _staleReason: e.message };
+        }
+      }
+    },
+    {
+      name: 'competitors',
+      build: (_r, tally) => {
+        const toolBoard = {};
+        const switchingMoments = [];
+        forEachRow(rows, (r) => {
+          for (const t of r.tools) {
+            const k = String(t.tool || '').trim();
+            if (!k) continue;
+            toolBoard[k] = toolBoard[k] || { tool: k, mentions: 0, positive: 0, negative: 0, mixed: 0, neutral: 0, switching: 0 };
+            toolBoard[k].mentions++;
+            count(toolBoard[k], t.sentiment in toolBoard[k] ? t.sentiment : 'neutral');
+            if (t.switching) {
+              toolBoard[k].switching++;
+              if (switchingMoments.length < 60) {
+                switchingMoments.push({ tool: k, context: t.context, permalink: r.permalink, subreddit: r.subreddit, week: r.week });
+              }
+            }
+          }
+        }, tally);
+        return {
+          board: Object.values(toolBoard).sort((a, b) => b.mentions - a.mentions).slice(0, 25),
+          switchingMoments: switchingMoments.slice(0, 40)
+        };
+      }
+    },
+    {
+      name: 'resonance',
+      build: (_r, tally) => {
+        const resonancePosts = [];
+        forEachRow(rows, (r) => {
+          let fit = 0;
+          const hits = [];
+          if (r.topics.includes('provenance-proof')) { fit += 3; hits.push('provenance topic'); }
+          if (r.topics.includes('continuity-consistency')) { fit += 2; hits.push('continuity topic'); }
+          if (r.topics.includes('detection-accusations')) { fit += 2; hits.push('accusation pain'); }
+          if (r.topics.includes('ai-boundaries')) { fit += 1; hits.push('boundaries topic'); }
+          const textPool = [
+            ...r.features.map((f) => f.feature),
+            ...r.trustSignals.map((t) => t.signal),
+            ...r.painPoints,
+            r.quote
+          ].join(' | ');
+          for (const [pillar, rx] of Object.entries(PILLAR_SIGNALS)) {
+            if (rx.test(textPool)) { fit += 2; hits.push(pillar); }
+          }
+          if (fit >= 4) {
+            resonancePosts.push({
+              fit, hits, title: r.title, quote: r.quote, permalink: r.permalink,
+              subreddit: r.subreddit, stance: r.stance, experience: r.experience, week: r.week,
+              kind: r.kind,
+              salience: salienceOf(r, salience),
+              scoreAtCapture: r.scoreAtCapture // displayed with a capture-time label, never ranked on
+            });
+          }
+        }, tally);
+        return {
+          posts: resonancePosts.sort((a, b) => b.fit - a.fit || b.salience - a.salience).slice(0, 50),
+          totalMatching: resonancePosts.length,
+          note: 'Engagement queue: reply as humans, never astroturf; provenance pitch lands best on accusation-pain posts.',
+          ranking: 'pillar fit, then recurrence across distinct threads — never Reddit engagement'
+        };
+      }
+    },
+    {
+      name: 'signals',
+      build: (results) => {
+        const heat = (results.heatmap && results.heatmap.heat) || {};
+        const nowWeek = weeks[weeks.length - 1];
+        const prevWeeks = weeks.slice(-5, -1); // trailing 4 full weeks before current
+        const spikes = [];
+        if (nowWeek && prevWeeks.length === 4) {
+          for (const t of TOPICS) {
+            const cur = (heat[t.slug] || {})[nowWeek] || 0;
+            const mean = prevWeeks.reduce((a, w) => a + ((heat[t.slug] || {})[w] || 0), 0) / 4;
+            if (cur >= 5 && cur >= 2 * Math.max(mean, 1)) {
+              spikes.push({ topic: t.slug, label: t.label, thisWeek: cur, trailingMean: +mean.toFixed(1), ratio: +(cur / Math.max(mean, 1)).toFixed(1) });
+            }
+          }
+        }
+        return { week: nowWeek, spikes: spikes.sort((a, b) => b.ratio - a.ratio), computedAt: now().toISOString() };
+      }
+    },
+    {
+      name: 'discovery',
+      build: (_r, tally) => {
+        const tracked = new Set(
+          (env.SUBREDDITS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
+        );
+        for (const r of rows) tracked.add(r.subreddit); // anything we already ingest
+        const NOISE = new Set(['all', 'askreddit', 'popular', 'funny', 'pics', 'memes', 'aita', 'amitheasshole']);
+        const mentionCounts = {}, mentionedBy = {};
+        const tally1 = (sub, mentions) => {
+          for (const m of mentions) {
+            if (!m || tracked.has(m) || NOISE.has(m)) continue;
+            count(mentionCounts, m);
+            (mentionedBy[m] = mentionedBy[m] || new Set()).add(sub);
+          }
+        };
+        forEachRow(rows, (r) => tally1(r.subreddit, r.subMentions), tally);
+        // Comment mentions come straight from the ingest-time extraction, so
+        // discovery works even under the ingest-only comment policy — the
+        // runbook always claimed r/Sub extraction ran over comments, and until
+        // round 4 there were no comments for it to run over (§3a.7).
+        forEachRow(commentMentions, (c) => tally1(c.subreddit, c.mentions), tally);
+        return {
+          candidates: Object.entries(mentionCounts)
+            .filter(([, n]) => n >= 3)
+            .sort((a, b) => b[1] - a[1])
+            .slice(0, 40)
+            .map(([name, n]) => ({ sub: name, mentions: n, citedBy: [...mentionedBy[name]].slice(0, 6) })),
+          note: 'Subs cited >=3 times by tracked communities and not yet ingested. Vet before adding: writer-side? active? enclave tag needed?',
+          sources: { analyzedRows: rows.length, commentRows: commentMentions.length }
+        };
+      }
+    },
+    {
+      name: 'brief',

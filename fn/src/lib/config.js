@@ -116,6 +116,19 @@ function commentMinChars(env = process.env) {
   return Number.isFinite(n) && n > 0 ? n : 400;
 }
 
+// Boilerplate detection thresholds. Both are mechanical knobs with defensible
+// constants, not copies of live config. See lib/content-class.js for why 120
+// characters is the false-positive floor.
+function boilerplateMinRepeats(env = process.env) {
+  const n = parseInt(env.BOILERPLATE_MIN_REPEATS || '5', 10);
+  return Number.isFinite(n) && n > 0 ? n : 5;
+}
+
+function boilerplateMinChars(env = process.env) {
+  const n = parseInt(env.BOILERPLATE_MIN_CHARS || '120', 10);
+  return Number.isFinite(n) && n > 0 ? n : 120;
+}
+
 // Daily spend guardrail. There is no defensible constant for a budget ceiling —
 // 1500 was a stale copy of a live value that had since become 12000 — so an
 // unset cap analyses NOTHING and says so. Failing closed defers jobs (they are
@@ -138,6 +151,8 @@ module.exports = {
   bskyStreamKinds,
   commentAnalyzePolicy,
   commentMinChars,
+  boilerplateMinRepeats,
+  boilerplateMinChars,
   dailyAnalyzeCap,
   COMMENT_POLICIES,
   DEFAULT_COMMENT_POLICY,

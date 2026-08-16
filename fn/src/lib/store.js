@@ -70,6 +70,10 @@ async function upsertPost(post) {
       createdUtc: post.created_utc,
       permalink: post.permalink,
       flair: post.flair || '',
+      // Bot/boilerplate signals, captured at ingest so detection needs no
+      // re-fetch. Absent on pre-round-5 rows; the read path tolerates that.
+      distinguished: post.distinguished || '',
+      stickied: post.stickied === true,
       // Thread reconstruction for comments (§3a.3).
       linkId: post.linkId || undefined,
       parentId: post.parentId || undefined,
@@ -176,6 +180,29 @@ async function countPosts() {
     if (kindOf(e) === 'comment') comments++; else posts++;
   }
   return { total, analyzed, unanalyzed: total - analyzed, posts, comments };
+}
+
+// Every row, with only the columns the bot/boilerplate detectors need. Used by
+// POST /api/retag, which must clean the corpus WITHOUT any model call (§3d).
+async function listRowsForRetag() {
+  const rows = [];
+  const iter = postsTable().listEntities({
+    queryOptions: {
+      select: ['PartitionKey', 'RowKey', 'kind', 'author', 'title', 'createdUtc',
+        'distinguished', 'stickied', 'contentClass', 'contentClassReason']
+    }
+  });
+  for await (const e of iter) rows.push(e);
+  return rows;
+}
+
+// Write only the classification columns. Merge, so nothing else on the row —
+// including analysisJson — is touched. Tagging never rewrites analysis.
+async function setContentClass(partitionKey, rowKey, contentClass, contentClassReason) {
+  await postsTable().upsertEntity(
+    { partitionKey, rowKey, contentClass, contentClassReason: contentClassReason || '' },
+    'Merge'
+  );
 }
 
 // Comment rows with only the triage columns needed to evaluate the analysis
@@ -295,6 +322,8 @@ module.exports = {
   saveAnalysis,
   listAnalyzedPosts,
   listCommentTriage,
+  listRowsForRetag,
+  setContentClass,
   analyzedPostAiFlags,
   getPostRow,
   countPosts,

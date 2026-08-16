@@ -58,7 +58,6 @@ DEFAULT_BSKY_STREAMS_VALUE='[
 {"name":"bsky-ai-disclosure","query":"author AI disclosure","kind":"topic"},
 {"name":"bsky-nanowrimo","query":"nanowrimo","kind":"topic"},
 {"name":"bsky-novel-november","query":"\"novel november\"","kind":"topic"},
-{"name":"bsky-writing","query":"writing","kind":"topic"},
 {"name":"bsky-writersky","query":"#WriterSky","kind":"community"},
 {"name":"bsky-booksky","query":"#BookSky","kind":"community"},
 {"name":"bsky-writingcommunity","query":"#WritingCommunity","kind":"community"}
@@ -71,6 +70,13 @@ DEFAULT_BSKY_STREAMS_VALUE=$(printf '%s' "$DEFAULT_BSKY_STREAMS_VALUE" | tr -d '
 DEFAULT_COMMENT_ANALYZE_POLICY='ingest-only'
 DEFAULT_COMMENT_MIN_CHARS='400'
 DEFAULT_DAILY_ANALYZE_CAP='12000'
+# Bot/boilerplate detection. AutoModerator megathreads run on a schedule, so a
+# 12-month backfill captures dozens of byte-identical copies per sub, each
+# carrying the sub's rule text. MIN_CHARS is the false-positive floor: ordinary
+# repeated human phrasing ("good luck with your draft") normalises to ~25 chars,
+# real boilerplate to several hundred.
+DEFAULT_BOILERPLATE_MIN_REPEATS='5'
+DEFAULT_BOILERPLATE_MIN_CHARS='120'
 
 # Optional — only used if REDDIT_MODE=oauth after an approved registration.
 # Deliberately NOT defaulted here: `resolve` below must be able to tell "the
@@ -202,6 +208,8 @@ resolve "BRAIN_CAPTURE_URL"      "${BRAIN_CAPTURE_URL:-}"      ""
 resolve "DAILY_ANALYZE_CAP"      "${DAILY_ANALYZE_CAP:-}"      "$DEFAULT_DAILY_ANALYZE_CAP"
 resolve "COMMENT_ANALYZE_POLICY" "${COMMENT_ANALYZE_POLICY:-}" "$DEFAULT_COMMENT_ANALYZE_POLICY"
 resolve "COMMENT_MIN_CHARS"      "${COMMENT_MIN_CHARS:-}"      "$DEFAULT_COMMENT_MIN_CHARS"
+resolve "BOILERPLATE_MIN_REPEATS" "${BOILERPLATE_MIN_REPEATS:-}" "$DEFAULT_BOILERPLATE_MIN_REPEATS"
+resolve "BOILERPLATE_MIN_CHARS"   "${BOILERPLATE_MIN_CHARS:-}"   "$DEFAULT_BOILERPLATE_MIN_CHARS"
 resolve "MIN_COMMENTS_FOR_FETCH" "${MIN_COMMENTS_FOR_FETCH:-}" "3"
 resolve "REDDIT_MODE"            "${REDDIT_MODE:-}"            "arctic"
 resolve "REDDIT_CLIENT_ID"       "${REDDIT_CLIENT_ID:-}"       ""
@@ -228,10 +236,10 @@ ls node_modules/@azure >/dev/null || { echo "!! npm install produced no @azure d
 func azure functionapp publish "$FN" --javascript 2>&1 | tail -8
 cd - >/dev/null
 sleep 20
-# As-built inventory (verified 2026-08-15, round 4): analyze, ask, backfill,
+# As-built inventory (verified 2026-08-16, round 5): analyze, ask, backfill,
 # backfillWorker, export, ingestDaily, ingestNow, insights, ping, reanalyze,
-# rollupDaily, rollupNow.
-EXPECTED_FUNCTIONS=12
+# retag, rollupDaily, rollupNow.
+EXPECTED_FUNCTIONS=13
 echo "== functions indexed (expect $EXPECTED_FUNCTIONS) =="
 if FN_LIST=$(az functionapp function list -g "$RG" -n "$FN" --query "[].name" -o tsv); then
   echo "$FN_LIST"
@@ -264,7 +272,10 @@ echo "============================================================"
 echo " DONE"
 echo "  Dashboard:  https://${SWA_HOST}"
 echo "  API base:   https://${FN}.azurewebsites.net"
-echo "  Key:        ${HOST_KEY}"
+# The key is NOT printed. It has leaked into two transcripts by being echoed
+# here; a deploy log is not a secret store. Fetch it deliberately when needed:
+echo "  Key:        (not printed — fetch with the command below)"
+echo "    az functionapp keys list -n ${FN} -g ${RG} --query functionKeys.default -o tsv"
 echo "  Enter the API base + key on the dashboard's connect screen."
 echo "============================================================"
 
@@ -291,5 +302,6 @@ if [ "${BACKFILL:-0}" = "1" ]; then
   echo "Backfill running. Re-run the per-sub calls until each reports exhausted:true."
   echo "Analysis drains through the queue (capped at DAILY_ANALYZE_CAP/day)."
   echo "First rollup once the queue drains:"
-  echo "  curl -X POST 'https://${FN}.azurewebsites.net/api/rollupNow?code=${HOST_KEY}'"
+  echo "  KEY=\$(az functionapp keys list -n ${FN} -g ${RG} --query functionKeys.default -o tsv)"
+  echo "  curl -X POST \"https://${FN}.azurewebsites.net/api/rollupNow?code=\$KEY\""
 fi

@@ -20,6 +20,7 @@
 const { TOPICS, PILLAR_SIGNALS } = require('./taxonomy');
 const config = require('./config');
 const commentPolicy = require('./comment-policy');
+const contentClass = require('./content-class');
 
 // ---------------------------------------------------------------------------
 // Salience — corpus-derived, never engagement-derived (§3c)
@@ -100,6 +101,13 @@ function parseRows(rows) {
         scoreAtCapture: r.score || 0,
         numCommentsAtCapture: r.numComments || 0,
         createdUtc: r.createdUtc,
+        // Bot/boilerplate tag. Absent on rows not yet retagged, which reads as
+        // `human`; runRollup applies a fallback classification so an untagged
+        // corpus is still filtered (§3c).
+        contentClass: r.contentClass || null,
+        contentClassReason: r.contentClassReason || '',
+        distinguished: r.distinguished || null,
+        stickied: r.stickied === true,
         week: a.week || '',
         aiRelated: !!a.ai_related,
         stance: a.stance_on_ai || 'na',
@@ -147,6 +155,33 @@ function count(map, key, by = 1) {
 }
 
 const topNObj = (m, n) => Object.fromEntries(Object.entries(m || {}).sort((a, b) => b[1] - a[1]).slice(0, n));
+
+// Apply the bot/boilerplate detectors to rows that carry no stored
+// `contentClass`. A row already tagged by POST /api/retag keeps its tag; an
+// untagged row is classified from the columns the rollup can see. Title
+// repeat-hash works here because scheduled megathreads repeat their titles
+// verbatim; body hashing needs the raw archive and belongs to retag.
+function classifyUntagged(rows, env = process.env) {
+  const opts = {
+    minRepeats: config.boilerplateMinRepeats(env),
+    minChars: config.boilerplateMinChars(env)
+  };
+  const untagged = rows.filter((r) => !r.contentClass);
+  if (!untagged.length) return rows;
+  const index = contentClass.buildRepeatIndex(
+    untagged.map((r) => ({ subreddit: r.subreddit, title: r.title, body: '' })),
+    opts
+  );
+  return rows.map((r) => {
+    if (r.contentClass) return r;
+    const c = contentClass.classifyRow(
+      { author: r.author, title: r.title, body: '', subreddit: r.subreddit, distinguished: r.distinguished, stickied: r.stickied },
+      index,
+      opts
+    );
+    return { ...r, contentClass: c.contentClass, contentClassReason: c.contentClassReason };
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Section runner — per-section isolation (§4.1)
@@ -255,18 +290,45 @@ function computeCohort(frameRows, tally) {
 
 // Builds the ordered section list. Order is preserved from the pre-round-3
 // write sequence so the on-storage layout is unchanged.
-function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = () => new Date(), commentMentions = [], commentStats = null }) {
-  const salience = buildRecurrenceIndex(rows);
+// SENTIMENT SECTIONS READ `humanRows` / `humanAiRows` ONLY.
+//
+// Bot and boilerplate rows stay in the corpus (they are tagged, never deleted)
+// and remain visible in `meta`, `heatmap` and the `rules` frame — but they must
+// never reach a stance, quote, persona, trust, minbar, features, resonance,
+// signals, cohort, distributions or competitors aggregate. Subreddit rule text
+// repeated on a schedule is not a writer's position, and counting it biases the
+// corpus toward appearing anti-AI.
+//
+// fn/test/bot-boilerplate.test.js greps this file to assert no sentiment section
+// references the unfiltered `rows` / `aiRows`, and that assertion is verified to
+// fail against 3562788.
+function buildSections({
+  rows, aiRows, humanRows, humanAiRows, nonHumanRows,
+  weeks, env, aoai, store, context, now = () => new Date(),
+  commentMentions = [], commentStats = null
+}) {
+  const salience = buildRecurrenceIndex(humanRows);
   return [
     {
+      // meta counts EVERYTHING, but never as one blended number: bot and
+      // boilerplate rows are reported separately so the corpus size is honest
+      // about what fraction of it is not writer sentiment.
       name: 'meta',
       build: () => ({
-        totalPosts: rows.length,
-        aiRelated: aiRows.length,
-        submissions: rows.filter((r) => r.kind === 'post').length,
-        comments: rows.filter((r) => r.kind === 'comment').length,
+        totalPosts: humanRows.length,
+        totalRowsIncludingNonHuman: rows.length,
+        aiRelated: humanAiRows.length,
+        nonHuman: {
+          total: nonHumanRows.length,
+          bot: nonHumanRows.filter((r) => r.contentClass === 'bot').length,
+          boilerplate: nonHumanRows.filter((r) => r.contentClass === 'boilerplate').length,
+          byReason: nonHumanRows.reduce((m, r) => (count(m, r.contentClassReason || 'unknown'), m), {}),
+          note: 'Tagged, never deleted. Excluded from every sentiment aggregate; reported in the `rules` frame.'
+        },
+        submissions: humanRows.filter((r) => r.kind === 'post').length,
+        comments: humanRows.filter((r) => r.kind === 'comment').length,
         commentCorpus: commentStats, // ingested vs analyzed, incl. the policy dry run
-        subreddits: [...new Set(rows.map((r) => r.subreddit))].sort(),
+        subreddits: [...new Set(humanRows.map((r) => r.subreddit))].sort(),
         weeks,
         engagementNote: 'score/numComments are an Arctic Shift capture-time snapshot with variable per-row lag. Surfaced as scoreAtCapture/numCommentsAtCapture; nothing ranks on them.',
         updatedAt: now().toISOString()
@@ -277,11 +339,11 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
       build: (_r, tally) => {
         const heat = {};
         for (const t of TOPICS) heat[t.slug] = {};
-        forEachRow(aiRows, (r) => {
+        forEachRow(humanAiRows, (r) => {
           for (const t of r.topics) if (heat[t]) count(heat[t], r.week);
         }, tally);
         const heatBySub = {};
-        forEachRow(aiRows, (r) => {
+        forEachRow(humanAiRows, (r) => {
           heatBySub[r.subreddit] = heatBySub[r.subreddit] || {};
           for (const t of r.topics) count(heatBySub[r.subreddit], t);
         }, tally);
@@ -292,7 +354,7 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
       name: 'stance',
       build: (_r, tally) => {
         const stanceByWeek = {}, stances = {};
-        forEachRow(aiRows, (r) => {
+        forEachRow(humanAiRows, (r) => {
           stanceByWeek[r.week] = stanceByWeek[r.week] || {};
           count(stanceByWeek[r.week], r.stance);
           count(stances, r.stance);
@@ -305,7 +367,7 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
       build: (_r, tally) => {
         const stances = {}, experience = {}, topicTotals = {}, toolCounts = {}, painCounts = {};
         const stancesBySource = {};
-        forEachRow(aiRows, (r) => {
+        forEachRow(humanAiRows, (r) => {
           stancesBySource[r.source] = stancesBySource[r.source] || {};
           count(stancesBySource[r.source], r.stance);
           count(stances, r.stance);
@@ -333,7 +395,7 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
       name: 'features',
       build: async (_r, tally) => {
         const rawFeatures = [];
-        forEachRow(rows, (r) => {
+        forEachRow(humanRows, (r) => {
           for (const f of r.features) {
             rawFeatures.push({ name: f.feature, aiRelated: !!f.ai_related, quote: f.quote, permalink: r.permalink, subreddit: r.subreddit });
           }
@@ -370,7 +432,7 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
       name: 'minbar',
       build: (_r, tally) => {
         const baselineCounts = {}, dbByKind = {}, dbItems = {};
-        forEachRow(rows, (r) => {
+        forEachRow(humanRows, (r) => {
           for (const b of r.expectedBaseline) count(baselineCounts, String(b || '').toLowerCase().trim());
           for (const d of r.dealBreakers) {
             count(dbByKind, d.kind);
@@ -392,7 +454,7 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
       build: (_r, tally) => {
         const trust = { builds: {}, breaks: {} };
         const trustExamples = { builds: {}, breaks: {} };
-        forEachRow(rows, (r) => {
+        forEachRow(humanRows, (r) => {
           for (const t of r.trustSignals) {
             if (!trust[t.direction]) continue; // unknown direction — skip, don't throw
             const k = String(t.signal || '').toLowerCase().trim();
@@ -434,7 +496,7 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
           return t ? `reddit-${t}` : 'reddit';
         };
         const frames = {};
-        forEachRow(aiRows, (r) => {
+        forEachRow(humanAiRows, (r) => {
           const f = tagOf(r);
           (frames[f] = frames[f] || []).push(r);
         }, tally);
@@ -452,7 +514,7 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
       name: 'quotes',
       build: (_r, tally) => {
         const picked = [];
-        forEachRow(aiRows, (r) => { if (r.quote) picked.push(r); }, tally);
+        forEachRow(humanAiRows, (r) => { if (r.quote) picked.push(r); }, tally);
         return {
           quotes: picked
             .sort(bySalience(salience))
@@ -471,12 +533,12 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
       build: async (results) => {
         const dist = results.distributions || {};
         try {
-          const sample = aiRows
+          const sample = humanAiRows
             .slice()
             .sort(bySalience(salience))
             .map((r) => ({ stance: r.stance, experience: r.experience, summary: r.summary, quote: r.quote }));
           return await aoai.synthesizePersonas(sample, {
-            total: aiRows.length,
+            total: humanAiRows.length,
             stances: dist.stances || {},
             experience: dist.experience || {},
             topTopics: Object.entries(dist.topicTotals || {}).sort((a, b) => b[1] - a[1]).slice(0, 10)
@@ -496,7 +558,7 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
       build: (_r, tally) => {
         const toolBoard = {};
         const switchingMoments = [];
-        forEachRow(rows, (r) => {
+        forEachRow(humanRows, (r) => {
           for (const t of r.tools) {
             const k = String(t.tool || '').trim();
             if (!k) continue;
@@ -521,7 +583,7 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
       name: 'resonance',
       build: (_r, tally) => {
         const resonancePosts = [];
-        forEachRow(rows, (r) => {
+        forEachRow(humanRows, (r) => {
           let fit = 0;
           const hits = [];
           if (r.topics.includes('provenance-proof')) { fit += 3; hits.push('provenance topic'); }
@@ -580,7 +642,7 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
         const tracked = new Set(
           (env.SUBREDDITS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean)
         );
-        for (const r of rows) tracked.add(r.subreddit); // anything we already ingest
+        for (const r of humanRows) tracked.add(r.subreddit); // anything we already ingest
         const NOISE = new Set(['all', 'askreddit', 'popular', 'funny', 'pics', 'memes', 'aita', 'amitheasshole']);
         const mentionCounts = {}, mentionedBy = {};
         const tally1 = (sub, mentions) => {
@@ -590,7 +652,7 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
             (mentionedBy[m] = mentionedBy[m] || new Set()).add(sub);
           }
         };
-        forEachRow(rows, (r) => tally1(r.subreddit, r.subMentions), tally);
+        forEachRow(humanRows, (r) => tally1(r.subreddit, r.subMentions), tally);
         // Comment mentions come straight from the ingest-time extraction, so
         // discovery works even under the ingest-only comment policy — the
         // runbook always claimed r/Sub extraction ran over comments, and until
@@ -603,7 +665,32 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
             .slice(0, 40)
             .map(([name, n]) => ({ sub: name, mentions: n, citedBy: [...mentionedBy[name]].slice(0, 6) })),
           note: 'Subs cited >=3 times by tracked communities and not yet ingested. Vet before adding: writer-side? active? enclave tag needed?',
-          sources: { analyzedRows: rows.length, commentRows: commentMentions.length }
+          sources: { analyzedRows: humanRows.length, commentRows: commentMentions.length }
+        };
+      }
+    },
+    {
+      // What the excluded boilerplate actually SAYS, per sub. The rule text is
+      // not sentiment, but it is real evidence about community norms — which
+      // communities have formally banned AI assistance, and in what terms —
+      // and it is directly relevant to the trust question. Kept as its own
+      // frame precisely so it is never pooled with writer voices.
+      name: 'rules',
+      build: (_r, tally) => {
+        const bySub = {};
+        forEachRow(nonHumanRows, (r) => {
+          const b = bySub[r.subreddit] || (bySub[r.subreddit] = { subreddit: r.subreddit, rows: 0, byReason: {}, samples: [] });
+          b.rows++;
+          count(b.byReason, r.contentClassReason || 'unknown');
+          const text = (r.quote || r.summary || r.title || '').trim();
+          if (text && b.samples.length < 5 && !b.samples.some((s) => s.text === text)) {
+            b.samples.push({ text: text.slice(0, 400), permalink: r.permalink, reason: r.contentClassReason });
+          }
+        }, tally);
+        return {
+          subs: Object.values(bySub).sort((a, b) => b.rows - a.rows),
+          totalExcluded: nonHumanRows.length,
+          note: 'Bot and boilerplate rows, excluded from every sentiment aggregate. What a subreddit formally prohibits is evidence about community norms — it is not a writer position.'
         };
       }
     },
@@ -675,10 +762,24 @@ function buildSections({ rows, aiRows, weeks, env, aoai, store, context, now = (
 async function runRollup({ store, aoai, context, env = process.env, now = () => new Date(), fetchImpl = globalThis.fetch }) {
   const startedMs = Date.now();
   const rawRows = await store.listAnalyzedPosts();
-  const { items: rows, skipped: rowsSkipped } = parseRows(rawRows);
+  const { items: parsed, skipped: rowsSkipped } = parseRows(rawRows);
+
+  // Bot / boilerplate exclusion (§3c). Rows carry `contentClass` once
+  // POST /api/retag has run. Until then — and for anything ingested since the
+  // last retag — the rollup classifies on the fly from what it has: author,
+  // distinguished, stickied, and title repeat-hash within each sub. Bodies are
+  // not in the posts table, so this is a subset of retag's power, but it means
+  // an un-retagged corpus is never silently counted as writer sentiment.
+  const rows = classifyUntagged(parsed, env);
+  const humanRows = rows.filter(contentClass.isHuman);
+  const nonHumanRows = rows.filter((r) => !contentClass.isHuman(r));
   const aiRows = rows.filter((r) => r.aiRelated);
-  const weeks = [...new Set(rows.map((r) => r.week).filter(Boolean))].sort();
-  context?.log?.(`rollup over ${rows.length} analyzed posts (${aiRows.length} AI-related, ${rowsSkipped} unparseable)`);
+  const humanAiRows = humanRows.filter((r) => r.aiRelated);
+  const weeks = [...new Set(humanRows.map((r) => r.week).filter(Boolean))].sort();
+  context?.log?.(
+    `rollup over ${rows.length} analyzed rows: ${humanRows.length} human ` +
+    `(${humanAiRows.length} AI-related), ${nonHumanRows.length} bot/boilerplate excluded, ${rowsSkipped} unparseable`
+  );
 
   // Comment corpus: triage columns only — no bodies, no blobs, no model calls.
   // Feeds discovery (ingest-time r/Sub extraction) and the policy dry run that
@@ -710,7 +811,10 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
     }
   }
 
-  const sections = buildSections({ rows, aiRows, weeks, env, aoai, store, context, now, commentMentions, commentStats });
+  const sections = buildSections({
+    rows, aiRows, humanRows, humanAiRows, nonHumanRows,
+    weeks, env, aoai, store, context, now, commentMentions, commentStats
+  });
   const { results, written, failed, rowIssues } = await runSections(sections, {
     saveAggregate: (p, k, v) => store.saveAggregate(p, k, v),
     context,
@@ -764,5 +868,5 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
 
 module.exports = {
   parseRows, forEachRow, runSections, buildSections, runRollup, computeCohort,
-  topNObj, count, buildRecurrenceIndex, salienceOf, bySalience
+  topNObj, count, buildRecurrenceIndex, salienceOf, bySalience, classifyUntagged
 };

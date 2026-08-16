@@ -41,7 +41,12 @@ function normalizePost(d) {
     created_utc: typeof d.created_utc === 'number' ? d.created_utc : Math.floor(new Date(d.created_utc).getTime() / 1000),
     permalink: d.permalink ? 'https://www.reddit.com' + d.permalink : `https://www.reddit.com/r/${d.subreddit}/comments/${d.id}/`,
     flair: d.link_flair_text || null,
-    is_self: d.is_self !== false
+    is_self: d.is_self !== false,
+    // Bot/boilerplate signals. Scheduled megathreads are almost always both
+    // distinguished and stickied; capturing them makes the cheap high-precision
+    // detectors available without a model call (§3a).
+    distinguished: d.distinguished || null,
+    stickied: d.stickied === true
   };
 }
 
@@ -88,7 +93,9 @@ function normalizeComment(d) {
       ? 'https://www.reddit.com' + d.permalink
       : `https://www.reddit.com/r/${sub}/comments/${linkId}/comment/${d.id}/`,
     flair: null,
-    is_self: true
+    is_self: true,
+    distinguished: d.distinguished || null,
+    stickied: d.stickied === true
   };
 }
 

@@ -179,6 +179,9 @@
       <h3 style="font-size:13px;margin:16px 0 2px;">Candidate subreddits</h3>
       <p class="sub" style="margin-bottom:6px;">Communities cited by the ones we track but not yet ingested. Vet, then add via the runbook.</p>
       <div id="discovery"></div>
+      <h3 style="font-size:13px;margin:16px 0 2px;">Excluded: bot &amp; boilerplate</h3>
+      <p class="sub" style="margin-bottom:6px;">Scheduled megathreads, rule text and submission templates — tagged, kept, and excluded from every sentiment figure above. What a sub formally prohibits is evidence about community norms, not a writer's position.</p>
+      <div id="rules"></div>
     </section>
 
     <div class="cols">
@@ -419,6 +422,7 @@ function render(data) {
   track(section('brief', ['#brief'], data.brief, renderBrief));
   track(section('signals', ['#signals'], data.signals, renderSignals));
   track(section('discovery', ['#discovery'], data.discovery, renderDiscovery));
+  track(section('rules', ['#rules'], data.rules, renderRules));
   track(section('competitors', ['#competitors'], data.competitors, renderCompetitors));
   track(section('resonance', ['#resonance'], data.resonance, renderResonance));
   track(section('cohort', ['#cohortTiles', '#basisBars', '#commentBars', '#frameNote'], data.cohort, renderCohort));
@@ -476,6 +480,22 @@ function renderDiscovery(d) {
       <div style="font-size:11.5px;color:var(--ink-2);">cited by ${(c.citedBy || []).map((s) => esc(s)).join(', ')}</div>
       <div class="n">${c.mentions}</div>
     </div>`).join('') || '<p class="sub">No candidates yet — populates as analysis drains.</p>';
+}
+
+function renderRules(r) {
+  const subs = (r && r.subs) || [];
+  if (!subs.length) {
+    $('#rules').innerHTML = '<p class="sub">Nothing excluded — no bot or boilerplate rows detected.</p>';
+    return;
+  }
+  $('#rules').innerHTML = subs.slice(0, 8).map((s) => `
+    <div class="dbrow">
+      <strong>r/${esc(s.subreddit)}</strong>
+      <span style="color:var(--ink-2)"> — ${s.rows} excluded</span>
+      ${Object.entries(s.byReason || {}).map(([k, n]) => `<span class="chip">${esc(k)} ×${n}</span>`).join('')}
+      ${(s.samples || []).slice(0, 1).map((x) => `<div class="ev" style="margin-top:4px;">“${esc(x.text)}”</div>`).join('')}
+    </div>`).join('')
+    + `<p class="sub" style="margin-top:8px;">${r.totalExcluded} rows excluded in total.</p>`;
 }
 
 function renderCompetitors(c) {
