@@ -16,6 +16,12 @@ const AGG_TABLE = 'aggregates';
 const RAW_CONTAINER = 'raw';
 const ANALYZE_QUEUE = 'analyze-jobs';
 const BACKFILL_QUEUE = 'backfill-jobs';
+// §8m (CB-LISTEN-REPO-7): the retag body/contamination scan and the corpus
+// audit both reliably exceed the 4:00 Azure gateway cut at this corpus size
+// and always will, so both run as self-requeuing queue workers — the same
+// shape as backfillWorker — rather than a single HTTP call.
+const RETAG_QUEUE = 'retag-jobs';
+const AUDIT_QUEUE = 'audit-jobs';
 
 function postsTable() {
   return TableClient.fromConnectionString(CONN(), POSTS_TABLE);
@@ -29,6 +35,12 @@ function analyzeQueue() {
 function backfillQueue() {
   return new QueueClient(CONN(), BACKFILL_QUEUE);
 }
+function retagQueue() {
+  return new QueueClient(CONN(), RETAG_QUEUE);
+}
+function auditQueue() {
+  return new QueueClient(CONN(), AUDIT_QUEUE);
+}
 
 async function ensureInfra() {
   await postsTable().createTable().catch(swallowExists);
@@ -37,6 +49,8 @@ async function ensureInfra() {
   await blobSvc.getContainerClient(RAW_CONTAINER).createIfNotExists();
   await analyzeQueue().createIfNotExists();
   await backfillQueue().createIfNotExists();
+  await retagQueue().createIfNotExists();
+  await auditQueue().createIfNotExists();
 }
 
 function swallowExists(e) {
@@ -115,6 +129,20 @@ async function enqueueAnalysis(job, delaySeconds = 0) {
 
 async function enqueueBackfill(job, delaySeconds = 0) {
   const q = backfillQueue();
+  await q.sendMessage(Buffer.from(JSON.stringify(job)).toString('base64'), {
+    visibilityTimeout: delaySeconds || undefined
+  });
+}
+
+async function enqueueRetag(job, delaySeconds = 0) {
+  const q = retagQueue();
+  await q.sendMessage(Buffer.from(JSON.stringify(job)).toString('base64'), {
+    visibilityTimeout: delaySeconds || undefined
+  });
+}
+
+async function enqueueAudit(job, delaySeconds = 0) {
+  const q = auditQueue();
   await q.sendMessage(Buffer.from(JSON.stringify(job)).toString('base64'), {
     visibilityTimeout: delaySeconds || undefined
   });
@@ -221,6 +249,21 @@ async function listCommentTriage() {
     queryOptions: {
       filter: "kind eq 'comment'",
       select: ['PartitionKey', 'RowKey', 'linkId', 'bodyChars', 'aiPrefilterHit', 'analyzed', 'subMentionsCsv', 'createdUtc']
+    }
+  });
+  for await (const e of iter) rows.push(e);
+  return rows;
+}
+
+// Every row, with only the columns the corpus quality audit's table-only pass
+// needs (CB-LISTEN-REPO-7 §8). No blob reads — mirrors listRowsForRetag's
+// shape and cost profile.
+async function listRowsForAudit() {
+  const rows = [];
+  const iter = postsTable().listEntities({
+    queryOptions: {
+      select: ['PartitionKey', 'RowKey', 'kind', 'author', 'analyzed', 'aiRelated',
+        'stance', 'contentClass', 'contentClassReason', 'week', 'flair', 'permalink', 'createdUtc']
     }
   });
   for await (const e of iter) rows.push(e);
@@ -382,10 +425,13 @@ module.exports = {
   saveRaw,
   enqueueAnalysis,
   enqueueBackfill,
+  enqueueRetag,
+  enqueueAudit,
   saveAnalysis,
   listAnalyzedPosts,
   listCommentTriage,
   listRowsForRetag,
+  listRowsForAudit,
   setContentClass,
   analyzedPostAiFlags,
   getPostRow,
@@ -402,5 +448,7 @@ module.exports = {
   getRaw,
   writeExport,
   ANALYZE_QUEUE,
-  BACKFILL_QUEUE
+  BACKFILL_QUEUE,
+  RETAG_QUEUE,
+  AUDIT_QUEUE
 };

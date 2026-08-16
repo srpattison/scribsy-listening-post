@@ -40,7 +40,8 @@ async function filteredCommentsLast24h() {
 }
 
 async function health() {
-  const [counts, depth, rollup, retagReport, contamination, filtered, registrySummary] = await Promise.all([
+  const [counts, depth, rollup, retagReport, contamination, filtered, registrySummary,
+    retagBodiesStatus, retagContaminationStatus, auditReport] = await Promise.all([
     store.countPosts().catch((e) => ({ error: e.message })),
     store.queueDepth().catch(() => null),
     store.getAggregate('rollup-health', 'latest').catch((e) => ({ error: e.message })),
@@ -48,7 +49,13 @@ async function health() {
     store.getAggregate('retag', 'latest').catch((e) => ({ error: e.message })),
     store.getAggregate('retag-contamination', 'latest').catch((e) => ({ error: e.message })),
     filteredCommentsLast24h(),
-    boilerplateRegistry.summarize(store).catch((e) => ({ error: e.message }))
+    boilerplateRegistry.summarize(store).catch((e) => ({ error: e.message })),
+    // Monotonic cumulative progress for the §8m queue-driven body/contamination
+    // scan — the underlying reports above only reflect the LAST completed
+    // chunk's window, so this is what actually shows the scan advancing.
+    store.getAggregate('retag-queue-status', 'bodies').catch((e) => ({ error: e.message })),
+    store.getAggregate('retag-queue-status', 'contamination').catch((e) => ({ error: e.message })),
+    store.getAggregate('audit', 'latest').catch((e) => ({ error: e.message }))
   ]);
   return {
     rowsTotal: counts.total ?? null,
@@ -70,6 +77,14 @@ async function health() {
     boilerplateRegistry: registrySummary,
     retag: retagReport && !retagReport.error ? retagReport : null,
     retagContamination: contamination && !contamination.error ? contamination : null,
+    // §8m: cumulative chunk-over-chunk progress for the queue-driven scan —
+    // `exhausted: true` is what "the comment-body harvest has completed"
+    // (§8o's ordering requirement) actually means, operationally.
+    retagQueueStatus: {
+      bodies: retagBodiesStatus && !retagBodiesStatus.error ? retagBodiesStatus : null,
+      contamination: retagContaminationStatus && !retagContaminationStatus.error ? retagContaminationStatus : null
+    },
+    audit: auditReport && !auditReport.error ? auditReport : null,
     checkedAt: new Date().toISOString()
   };
 }

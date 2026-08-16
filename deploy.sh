@@ -104,10 +104,14 @@ az storage container create -n raw --connection-string "$STCONN" -o none
 # tables + queue are created by the app on first run (ensureInfra), but pre-create anyway
 az storage table create -n posts --connection-string "$STCONN" -o none || true
 az storage table create -n aggregates --connection-string "$STCONN" -o none || true
-# Both queues are pre-created so a cold deploy never depends on the app's own
-# ensureInfra() to repair its infrastructure at runtime.
+# All four queues are pre-created so a cold deploy never depends on the app's
+# own ensureInfra() to repair its infrastructure at runtime. retag-jobs and
+# audit-jobs back the §8m queue-driven retag/contamination scan and corpus
+# audit (CB-LISTEN-REPO-7).
 az storage queue create -n analyze-jobs --connection-string "$STCONN" -o none || true
 az storage queue create -n backfill-jobs --connection-string "$STCONN" -o none || true
+az storage queue create -n retag-jobs --connection-string "$STCONN" -o none || true
+az storage queue create -n audit-jobs --connection-string "$STCONN" -o none || true
 
 echo "== azure openai (AI Foundry) =="
 az cognitiveservices account show -n "$AOAI" -g "$RG" -o none 2>/dev/null || \
@@ -240,10 +244,12 @@ ls node_modules/@azure >/dev/null || { echo "!! npm install produced no @azure d
 func azure functionapp publish "$FN" --javascript 2>&1 | tail -8
 cd - >/dev/null
 sleep 20
-# As-built inventory (verified 2026-08-16, round 5): analyze, ask, backfill,
-# backfillWorker, export, ingestDaily, ingestNow, insights, ping, reanalyze,
-# retag, rollupDaily, rollupNow.
-EXPECTED_FUNCTIONS=13
+# As-built inventory (verified 2026-08-16, round 7 — added audit, auditWorker,
+# retagWorker for the §8m queue-driven audit/retag-contamination scan):
+# analyze, ask, audit, auditWorker, backfill, backfillWorker, export,
+# ingestDaily, ingestNow, insights, ping, reanalyze, retag, retagWorker,
+# rollupDaily, rollupNow.
+EXPECTED_FUNCTIONS=16
 echo "== functions indexed (expect $EXPECTED_FUNCTIONS) =="
 if FN_LIST=$(az functionapp function list -g "$RG" -n "$FN" --query "[].name" -o tsv); then
   echo "$FN_LIST"

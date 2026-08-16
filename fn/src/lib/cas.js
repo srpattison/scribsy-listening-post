@@ -12,7 +12,7 @@
 // Retries on conflict with bounded jittered backoff. After the retry budget is
 // exhausted the last conflict error is rethrown, so a caller that cannot
 // safely resolve a value fails closed instead of guessing (§8n requirement 2).
-async function casUpdate(backend, mutate, { retries = 8, baseDelayMs = 5, sleep = defaultSleep, context, label } = {}) {
+async function casUpdate(backend, mutate, { retries = 12, baseDelayMs = 5, maxDelayMs = 500, sleep = defaultSleep, context, label } = {}) {
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
     const { value, etag } = await backend.get();
@@ -23,7 +23,13 @@ async function casUpdate(backend, mutate, { retries = 8, baseDelayMs = 5, sleep 
     } catch (e) {
       if (!e.conflict || attempt === retries) throw e;
       lastErr = e;
-      const delay = baseDelayMs * 2 ** attempt * (0.5 + Math.random() * 0.5);
+      // Full jitter (AWS's recommended backoff shape): delay is uniform over
+      // [0, cap], not just the top half of it. A narrower window (e.g.
+      // half-plus-jitter) clusters retries and under heavy contention (dozens
+      // of racers on one row) can exhaust the retry budget before every
+      // contender serializes — measured directly: 200-way contention with a
+      // narrower window occasionally exhausted an 8-retry budget.
+      const delay = Math.random() * Math.min(maxDelayMs, baseDelayMs * 2 ** attempt);
       context?.warn?.(`${label || 'CAS'} conflict, retry ${attempt + 1}/${retries} in ${Math.round(delay)}ms`);
       await sleep(delay);
     }
