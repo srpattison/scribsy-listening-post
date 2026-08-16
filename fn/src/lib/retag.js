@@ -260,9 +260,11 @@ async function scanContamination({
 
   // Comment bodies are the richest source of comment boilerplate — sticky rule
   // text recurring across threads. Publish what this pass found so the analyze
-  // path can filter on it (§3a).
+  // path can filter on it (§3a). Tagged 'comment-body', not the submission-body
+  // 'body' kind retag uses — conflating the two is what left the registry
+  // silently blind to comment boilerplate at analyze time (§8o).
   const registryWritten = await registry.merge(
-    store, registry.fromRepeatIndex(index, { minRepeats }), { context }
+    store, registry.fromRepeatIndex(index, { minRepeats, bodyKind: 'comment-body' }), { context }
   );
 
   const report = {

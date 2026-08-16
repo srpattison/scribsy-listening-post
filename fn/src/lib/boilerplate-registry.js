@@ -33,7 +33,15 @@ const MAX_HASHES_PER_SUB = 4000;
 
 // Derive qualifying hashes from a content-class repeat index.
 // Returns { [subreddit]: { [hash]: { repeats, kind } } }.
-function fromRepeatIndex(index, { minRepeats } = {}) {
+//
+// `bodyKind` distinguishes WHICH corpus the body index was built from —
+// submission bodies (retag's default, 'body') vs. comment bodies ('comment-
+// body', passed by the contamination scan). Conflating the two under one
+// 'body' label made "the registry has 87 hashes" unreadable as "repeat-hash
+// is/isn't protecting the analyze path against comment boilerplate", because
+// comment-derived and submission-derived hashes were indistinguishable once
+// merged (CB-LISTEN-REPO-7 §8o).
+function fromRepeatIndex(index, { minRepeats, bodyKind = 'body' } = {}) {
   const out = {};
   const harvest = (map, kind) => {
     for (const [key, repeats] of map) {
@@ -44,7 +52,7 @@ function fromRepeatIndex(index, { minRepeats } = {}) {
       (out[sub] = out[sub] || {})[hash] = { repeats, kind };
     }
   };
-  harvest(index.bodies, 'body');
+  harvest(index.bodies, bodyKind);
   harvest(index.titles, 'title');
   return out;
 }
@@ -113,18 +121,30 @@ function createCache(store, { ttlMs = 5 * 60 * 1000, now = () => Date.now() } = 
   };
 }
 
-// Per-sub hash counts, for reporting.
+// Per-sub hash counts, for reporting. `bySource` breaks each sub's count down
+// by which pass found it ('body' | 'title' | 'comment-body'), so "the registry
+// has 87 hashes" can never again be misread as "repeat-hash is protecting
+// comments in the analyze path" when every hash is title/submission-derived
+// (§8o requirement 3).
 async function summarize(store) {
   const rows = await store.listAggregates(PARTITION);
   const bySub = {};
+  const bySource = {};
   let total = 0;
   for (const r of rows) {
     if (r.error) continue;
-    const n = r.count ?? Object.keys(r.hashes || {}).length;
+    const hashes = r.hashes || {};
+    const n = r.count ?? Object.keys(hashes).length;
     bySub[r.period] = n;
     total += n;
+    const sourceCounts = {};
+    for (const meta of Object.values(hashes)) {
+      const kind = (meta && meta.kind) || 'body';
+      sourceCounts[kind] = (sourceCounts[kind] || 0) + 1;
+    }
+    bySource[r.period] = sourceCounts;
   }
-  return { subs: Object.keys(bySub).length, hashes: total, bySub };
+  return { subs: Object.keys(bySub).length, hashes: total, bySub, bySource };
 }
 
 module.exports = { PARTITION, MAX_HASHES_PER_SUB, fromRepeatIndex, merge, load, createCache, summarize };

@@ -295,6 +295,61 @@ async function getAggregate(metric, period) {
   return r.ok ? r.value : { error: r.error, failedAt: e.updatedAt || null };
 }
 
+// Same read as getAggregate, but also returns the row's ETag so a caller can
+// write back with optimistic concurrency (§8n). `etag: null` means the row
+// does not exist yet.
+async function getAggregateWithEtag(metric, period) {
+  let e;
+  try {
+    e = await aggTable().getEntity(metric, period);
+  } catch (err) {
+    if (err.statusCode === 404) return { value: null, etag: null };
+    throw err;
+  }
+  const r = tablesafe.unpackJson(e);
+  return { value: r.ok ? r.value : { error: r.error, failedAt: e.updatedAt || null }, etag: e.etag };
+}
+
+// Compare-and-swap write for counters written by many concurrent queue
+// handlers (§8n). `etag === null` requires the row to NOT already exist
+// (create); a non-null etag requires an exact match. Both raise a
+// `.conflict = true` error on a lost race so callers can retry via lib/cas.js.
+// A separate function from saveAggregate rather than adding CAS to its blind-
+// write semantics, which every other caller relies on (§8n requirement 3).
+async function saveAggregateIfMatch(metric, period, payload, etag) {
+  const { props, dropped } = tablesafe.packJson(payload);
+  const entity = {
+    partitionKey: metric,
+    rowKey: period,
+    ...props,
+    truncated: dropped.length ? dropped.join(',') : '',
+    updatedAt: new Date().toISOString()
+  };
+  try {
+    if (etag == null) {
+      await aggTable().createEntity(entity);
+    } else {
+      await aggTable().updateEntity(entity, 'Replace', { etag });
+    }
+  } catch (e) {
+    if (e.statusCode === 412 || e.statusCode === 409) {
+      const conflict = new Error(`CAS conflict on ${metric}/${period}: ${e.message}`);
+      conflict.conflict = true;
+      throw conflict;
+    }
+    throw e;
+  }
+}
+
+// {get, put} pair matching lib/cas.js's backend interface, scoped to one
+// aggregate row.
+function aggregateBackend(metric, period) {
+  return {
+    get: () => getAggregateWithEtag(metric, period),
+    put: (value, etag) => saveAggregateIfMatch(metric, period, value, etag)
+  };
+}
+
 async function getRaw(subreddit, createdUtc, postId, kind = 'post') {
   const blobSvc = BlobServiceClient.fromConnectionString(CONN());
   const day = new Date(createdUtc * 1000).toISOString().slice(0, 10);
@@ -340,6 +395,9 @@ module.exports = {
   kindOf,
   saveAggregate,
   getAggregate,
+  getAggregateWithEtag,
+  saveAggregateIfMatch,
+  aggregateBackend,
   listAggregates,
   getRaw,
   writeExport,
