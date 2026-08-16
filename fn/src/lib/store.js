@@ -22,6 +22,15 @@ const BACKFILL_QUEUE = 'backfill-jobs';
 // shape as backfillWorker — rather than a single HTTP call.
 const RETAG_QUEUE = 'retag-jobs';
 const AUDIT_QUEUE = 'audit-jobs';
+// r2 fix: the audit's resumable accumulator must round-trip losslessly across
+// chunks. Table Storage's 32,768-char property ceiling (see tablesafe.js)
+// means a large accumulator gets its fattest field silently dropped by
+// shrinkToFit — which is an acceptable degraded state for a DISPLAY report
+// (always labelled via `_truncated`), but corrupts the structure the next
+// chunk's merge depends on. Blob Storage has no per-property size ceiling, so
+// the accumulator lives here instead — this removes the failure category
+// rather than raising the ceiling.
+const AUDIT_STATE_CONTAINER = 'audit-state';
 
 function postsTable() {
   return TableClient.fromConnectionString(CONN(), POSTS_TABLE);
@@ -51,6 +60,7 @@ async function ensureInfra() {
   await backfillQueue().createIfNotExists();
   await retagQueue().createIfNotExists();
   await auditQueue().createIfNotExists();
+  await blobSvc.getContainerClient(AUDIT_STATE_CONTAINER).createIfNotExists();
 }
 
 function swallowExists(e) {
@@ -419,6 +429,49 @@ async function writeExport(lines) {
   });
 }
 
+// Whole-value JSON blob read/write for resumable-worker state that must
+// round-trip losslessly (the audit accumulator — r2 fix). Unlike
+// saveAggregate/getAggregate, there is no shrinkToFit here: a blob write
+// either fully succeeds or throws (e.g. a real Azure error), because Blob
+// Storage has no per-property size ceiling to shrink against. That is the
+// whole point — this is what "throw loud, never silently drop a field the
+// resume path depends on" looks like when the underlying medium has no
+// silent-truncation mechanism to guard against in the first place.
+async function saveBlobJson(name, value) {
+  const blobSvc = BlobServiceClient.fromConnectionString(CONN());
+  const container = blobSvc.getContainerClient(AUDIT_STATE_CONTAINER);
+  await container.createIfNotExists();
+  const body = JSON.stringify(value); // throws on circular structures etc. — loud, not silent
+  if (body === undefined) throw new Error(`saveBlobJson(${name}): value is not JSON-serialisable`);
+  await container.getBlockBlobClient(`${name}.json`).upload(body, Buffer.byteLength(body), {
+    blobHTTPHeaders: { blobContentType: 'application/json' }
+  });
+}
+
+// Returns the parsed value, `null` if the blob does not exist, or
+// `{ __corrupt: true, error }` if it exists but fails to parse — mirroring
+// unpackJson's "never throw on read" contract, so ONE unreadable state blob
+// cannot itself crash-loop the worker. The caller decides what "corrupt"
+// means (for the audit worker: reset the accumulator and restart the pass).
+async function getBlobJson(name) {
+  const blobSvc = BlobServiceClient.fromConnectionString(CONN());
+  const container = blobSvc.getContainerClient(AUDIT_STATE_CONTAINER);
+  const blob = container.getBlockBlobClient(`${name}.json`);
+  let text;
+  try {
+    const dl = await blob.downloadToBuffer();
+    text = dl.toString('utf8');
+  } catch (e) {
+    if (e.statusCode === 404) return null;
+    throw e;
+  }
+  try {
+    return JSON.parse(text);
+  } catch (e) {
+    return { __corrupt: true, error: e.message };
+  }
+}
+
 module.exports = {
   ensureInfra,
   upsertPost,
@@ -447,8 +500,11 @@ module.exports = {
   listAggregates,
   getRaw,
   writeExport,
+  saveBlobJson,
+  getBlobJson,
   ANALYZE_QUEUE,
   BACKFILL_QUEUE,
   RETAG_QUEUE,
-  AUDIT_QUEUE
+  AUDIT_QUEUE,
+  AUDIT_STATE_CONTAINER
 };

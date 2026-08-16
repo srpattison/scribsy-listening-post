@@ -26,9 +26,14 @@ app.storageQueue('auditWorker', {
   connection: 'AzureWebJobsStorage',
   handler: async (message, context) => {
     const job = typeof message === 'string' ? JSON.parse(message) : message;
-    const { capped, resumeAfter, chunkSize, rowsThisChunk } = await runAuditChunk(job, context, { storeImpl: store });
+    const { capped, resumeAfter, chunkSize, rowsThisChunk, restarted } = await runAuditChunk(job, context, { storeImpl: store });
+    if (restarted) context.warn('auditWorker: accumulator was unusable — this chunk restarted the full pass from scratch (r2)');
     context.log(`auditWorker: chunk done — ${rowsThisChunk} rows this chunk, capped=${capped}`);
     if (capped) {
+      // `after` here is diagnostic only — runAuditChunk trusts the persisted
+      // accumulator's own cursor for the actual resume position, never this
+      // field, so a lost/corrupted accumulator and a stale queue message can
+      // never disagree about where to scan next (r2 fix).
       await store.enqueueAudit({ after: resumeAfter, chunkSize }, 5);
     } else {
       context.log('auditWorker: exhausted — full-corpus audit complete');

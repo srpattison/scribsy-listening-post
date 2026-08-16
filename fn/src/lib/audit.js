@@ -39,6 +39,18 @@ const REMOVED_MARKERS = new Set(['[removed]', '[deleted]']);
 // reasoning and same value as retag.js's contamination scan (QUOTE_MIN_CHARS).
 const QUOTE_MIN_CHARS = 25;
 
+// r2 fix — the incident this constant exists to prevent: quoteSamples was
+// capped at 20 total (not per partition), first-come-first-served. At 254,035
+// rows that is bounded in COUNT but was still ~93% of the accumulator's
+// serialized size after only 4,000 rows once combined with everything else,
+// and it grows toward that 20-item ceiling from the very first partition
+// scanned — nothing about "20 total" bounds it by PARTITION, so a corpus with
+// many subreddits still produces a lopsided, non-representative sample. Now
+// bounded per (subreddit, bucket) via reservoir sampling (Algorithm R), so
+// total accumulator size from this field is O(partitions), not O(rows), and
+// every partition gets a fair, unbiased sample regardless of scan order.
+const QUOTE_SAMPLE_CAP_PER_PARTITION = 5;
+
 // §8c: crosspost/repost hashing floor. Reuses content-class's body floor
 // (120 chars) rather than inventing a new threshold — the same false-positive
 // reasoning applies: short bodies genuinely recur between unrelated posts.
@@ -262,7 +274,12 @@ async function scanChunk({
   let skipping = !!after;
 
   const quoteCounts = {}; // { [sub]: { 'post-body':n, 'human-comment':n, 'bot-comment':n, 'not-found':n } }
-  const quoteSamples = { 'bot-comment': [], 'not-found': [] };
+  // Chunk-LOCAL candidate list, per (subreddit, bucket) — deliberately uncapped
+  // here: naturally bounded by this one chunk's row limit (≤4 quotes/row), and
+  // never persisted on its own. mergeChunk reservoir-samples these into the
+  // persisted accumulator, which is where the real cap (QUOTE_SAMPLE_CAP_PER_PARTITION)
+  // applies.
+  const quoteSamples = {}; // { [sub]: { 'bot-comment': [...], 'not-found': [...] } }
   const hashHits = []; // [{ hash, sub, rowKey, permalink }] — caller merges into the corpus-wide map
   const emptyRemoved = {};
   const bodyLength = {}; // { [sub]: { count, totalChars } }
@@ -327,8 +344,9 @@ async function scanChunk({
       const bucket = classifyQuote(quote, { postText, humanBodies, botBodies });
       if (!bucket) continue;
       qc[bucket]++;
-      if (quoteSamples[bucket] && quoteSamples[bucket].length < 20) {
-        quoteSamples[bucket].push({ subreddit: sub, permalink: r.permalink || null, quote });
+      if (bucket === 'bot-comment' || bucket === 'not-found') {
+        const subBuckets = quoteSamples[sub] || (quoteSamples[sub] = {});
+        (subBuckets[bucket] || (subBuckets[bucket] = [])).push({ subreddit: sub, permalink: r.permalink || null, quote });
       }
     }
   }
@@ -342,28 +360,114 @@ async function scanChunk({
   };
 }
 
-// Merge one chunk's LOCAL findings into a persisted running accumulator.
-// `acc` is either `null` (first chunk) or a previously-merged accumulator of
-// this same shape. Duplicate-hash tracking is capped at MAX_TRACKED_HASHES
-// distinct hashes corpus-wide — logged explicitly via `acc.hashCapHit` rather
-// than silently dropping detection past the cap.
-function mergeChunk(acc, chunk) {
-  const next = acc ? JSON.parse(JSON.stringify(acc)) : {
+// ---------------------------------------------------------------------------
+// r2 fix — the accumulator's shape contract
+// ---------------------------------------------------------------------------
+//
+// A prior version of this module let `mergeChunk` proceed against WHATEVER
+// `acc` it was handed. In production, `saveAggregate`'s shrinkToFit silently
+// dropped `hashes` off a 4,000-row accumulator (Table Storage's 32,768-char
+// property ceiling; `hashes` alone would have needed hundreds of KB), and the
+// NEXT chunk's `mergeChunk(prevAcc, chunk)` — with `prevAcc.hashes` now
+// `undefined` — threw on `next.hashes[hit.hash]`, poisoned the queue message
+// after 5 retries, and the worker never made progress again.
+//
+// Two changes close this: (1) the accumulator now lives in Blob Storage
+// (lib/store.js's saveBlobJson/getBlobJson), which has no per-property
+// ceiling to shrink against — there is no longer a mechanism that can drop a
+// field silently. (2) `mergeChunk` validates its `acc` argument and THROWS
+// rather than proceeding if required fields are missing or wrong-typed — so
+// even a corrupted/foreign value (a stale Table-based row from before this
+// fix, a hand-edited blob, anything) fails loud instead of producing a
+// TypeError three calls deep. The WORKER (lib/audit-worker.js) is what
+// decides to recover from that by resetting to a fresh accumulator and
+// restarting the pass — this function's job is only to refuse to proceed on
+// bad input, not to repair it.
+
+const REQUIRED_ACC_FIELDS = {
+  rowsScanned: 'number', missingBlobs: 'number',
+  quoteCounts: 'object', quoteSamples: 'object',
+  hashes: 'object', hashCapHit: 'boolean', trackedHashCount: 'number',
+  emptyRemoved: 'object', bodyLength: 'object', nonEnglish: 'object'
+};
+
+class AccumulatorShapeError extends Error {
+  constructor(missing) {
+    super(`audit accumulator is missing or has the wrong type for: ${missing.join(', ')}`);
+    this.name = 'AccumulatorShapeError';
+    this.missing = missing;
+  }
+}
+
+// Throws AccumulatorShapeError if `acc` is not a valid accumulator. Plain
+// objects only (not arrays) for the object-typed fields — an array would
+// satisfy `typeof === 'object'` but silently break every `Object.entries`
+// merge loop below.
+function validateAccumulator(acc) {
+  if (!acc || typeof acc !== 'object' || Array.isArray(acc)) throw new AccumulatorShapeError(['(entire accumulator)']);
+  const bad = [];
+  for (const [key, type] of Object.entries(REQUIRED_ACC_FIELDS)) {
+    const v = acc[key];
+    if (type === 'object') {
+      if (v === null || typeof v !== 'object' || Array.isArray(v)) bad.push(key);
+    } else if (typeof v !== type) {
+      bad.push(key);
+    }
+  }
+  if (!('cursor' in acc) || (acc.cursor !== null && typeof acc.cursor !== 'string')) bad.push('cursor');
+  if (bad.length) throw new AccumulatorShapeError(bad);
+  return true;
+}
+
+function freshAccumulator() {
+  return {
     rowsScanned: 0, missingBlobs: 0,
-    quoteCounts: {}, quoteSamples: { 'bot-comment': [], 'not-found': [] },
+    quoteCounts: {}, quoteSamples: {},
     hashes: {}, hashCapHit: false, trackedHashCount: 0,
-    emptyRemoved: {}, bodyLength: {}, nonEnglish: {}
+    emptyRemoved: {}, bodyLength: {}, nonEnglish: {},
+    cursor: null
   };
+}
+
+// Streaming reservoir sampling (Algorithm R): after `bucket.seen` items have
+// been offered, `bucket.items` is a uniform random sample of size ≤ cap,
+// regardless of how many chunks / calls it took to see them all. `rand` is
+// injectable so tests can assert sample selection deterministically.
+function reservoirAdd(bucket, item, cap, rand) {
+  bucket.seen++;
+  if (bucket.items.length < cap) {
+    bucket.items.push(item);
+  } else {
+    const j = Math.floor(rand() * bucket.seen);
+    if (j < cap) bucket.items[j] = item;
+  }
+}
+
+// Merge one chunk's LOCAL findings into a persisted running accumulator.
+// `acc` is either `null`/`undefined` (fresh start) or a previously-merged
+// accumulator — validated above, not assumed. Duplicate-hash tracking is
+// capped at MAX_TRACKED_HASHES distinct hashes corpus-wide, and quote-sample
+// tracking at QUOTE_SAMPLE_CAP_PER_PARTITION per (subreddit, bucket) — both
+// caps are reported in the accumulator (`hashCapHit`/`trackedHashCount`,
+// `quoteSamples[sub][bucket].seen` vs `.items.length`), never silently.
+function mergeChunk(acc, chunk, { rand = Math.random } = {}) {
+  if (acc != null) validateAccumulator(acc); // requirement: reject bad input, don't patch around it
+  const next = acc ? JSON.parse(JSON.stringify(acc)) : freshAccumulator();
   next.rowsScanned += chunk.rowsScanned;
   next.missingBlobs += chunk.missingBlobs;
+  if (chunk.resumeAfter != null) next.cursor = chunk.resumeAfter;
 
   for (const [sub, counts] of Object.entries(chunk.quoteCounts || {})) {
     const dst = next.quoteCounts[sub] || (next.quoteCounts[sub] = { 'post-body': 0, 'human-comment': 0, 'bot-comment': 0, 'not-found': 0 });
     for (const [bucket, n] of Object.entries(counts)) dst[bucket] = (dst[bucket] || 0) + n;
   }
-  for (const bucket of ['bot-comment', 'not-found']) {
-    for (const s of (chunk.quoteSamples && chunk.quoteSamples[bucket]) || []) {
-      if (next.quoteSamples[bucket].length < 20) next.quoteSamples[bucket].push(s);
+  for (const [sub, buckets] of Object.entries(chunk.quoteSamples || {})) {
+    const dstSub = next.quoteSamples[sub] || (next.quoteSamples[sub] = {});
+    for (const bucketName of ['bot-comment', 'not-found']) {
+      const items = (buckets && buckets[bucketName]) || [];
+      if (!items.length) continue;
+      const dst = dstSub[bucketName] || (dstSub[bucketName] = { seen: 0, items: [] });
+      for (const item of items) reservoirAdd(dst, item, QUOTE_SAMPLE_CAP_PER_PARTITION, rand);
     }
   }
   for (const hit of chunk.hashHits || []) {
@@ -408,12 +512,15 @@ function duplicateSummary(acc) {
     repostRows: reposts.reduce((s, [, e]) => s + e.count, 0),
     top20,
     hashCapHit: !!acc.hashCapHit,
-    trackedHashCount: acc.trackedHashCount || 0
+    trackedHashCount: acc.trackedHashCount || 0,
+    maxTrackedHashes: MAX_TRACKED_HASHES
   };
 }
 
 module.exports = {
   EMPTY_MIN_CHARS, QUOTE_MIN_CHARS, DUP_MIN_CHARS, MAX_TRACKED_HASHES,
+  QUOTE_SAMPLE_CAP_PER_PARTITION,
   isEmptyOrRemoved, looksNonEnglish, quoteFieldsOf, classifyQuote,
-  tableChecks, scanChunk, mergeChunk, duplicateSummary
+  tableChecks, scanChunk, mergeChunk, duplicateSummary,
+  validateAccumulator, freshAccumulator, AccumulatorShapeError
 };
