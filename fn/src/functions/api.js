@@ -9,6 +9,7 @@
 const { app } = require('@azure/functions');
 const store = require('../lib/store');
 const config = require('../lib/config');
+const boilerplateRegistry = require('../lib/boilerplate-registry');
 const { askCorpus, embedTexts, b64ToVec, cosine } = require('../lib/aoai');
 
 const VIEWS = ['meta', 'heatmap', 'stance', 'distributions', 'features', 'minbar', 'trust', 'cohort', 'quotes', 'personas', 'brief', 'competitors', 'resonance', 'signals', 'discovery'];
@@ -16,11 +17,38 @@ const VIEWS = ['meta', 'heatmap', 'stance', 'distributions', 'features', 'minbar
 // Self-reported drain rate + last-rollup outcome. The CLI cannot read this
 // account's queue depth (`az storage queue metadata show` returns nothing), so
 // the analysis backlog is only observable if the app reports it.
+// Sum the prompt-side filter tallies for today and yesterday. Distinguishing
+// "filtering works" from "no bot comments were present" is the whole point —
+// from the outside they look identical, and the second is what a broken filter
+// looks like (§3c).
+async function filteredCommentsLast24h() {
+  try {
+    const rows = (await store.listAggregates('filter-counter')).filter((r) => !r.error);
+    const day = 86400000;
+    const cutoff = new Date(Date.now() - day).toISOString().slice(0, 10);
+    const recent = rows.filter((r) => r.period >= cutoff);
+    const byReason = {};
+    let total = 0;
+    for (const r of recent) {
+      total += r.total || 0;
+      for (const [k, n] of Object.entries(r.byReason || {})) byReason[k] = (byReason[k] || 0) + n;
+    }
+    return { total, byReason, days: recent.map((r) => r.period) };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
 async function health() {
-  const [counts, depth, rollup] = await Promise.all([
+  const [counts, depth, rollup, retagReport, contamination, filtered, registrySummary] = await Promise.all([
     store.countPosts().catch((e) => ({ error: e.message })),
     store.queueDepth().catch(() => null),
-    store.getAggregate('rollup-health', 'latest').catch((e) => ({ error: e.message }))
+    store.getAggregate('rollup-health', 'latest').catch((e) => ({ error: e.message })),
+    // Persisted so a severed HTTP response can no longer lose the report (§3d).
+    store.getAggregate('retag', 'latest').catch((e) => ({ error: e.message })),
+    store.getAggregate('retag-contamination', 'latest').catch((e) => ({ error: e.message })),
+    filteredCommentsLast24h(),
+    boilerplateRegistry.summarize(store).catch((e) => ({ error: e.message }))
   ]);
   return {
     rowsTotal: counts.total ?? null,
@@ -37,6 +65,11 @@ async function health() {
     lastRollupSectionsWritten: (rollup && rollup.sectionsWritten) || [],
     lastRollupSectionsFailed: (rollup && rollup.sectionsFailed) || [],
     lastRollupRowsSkipped: (rollup && rollup.rowsSkipped) ?? null,
+    // Prompt-side filtering (§3c) and the persisted long-run reports (§3d).
+    filteredCommentsLast24h: filtered,
+    boilerplateRegistry: registrySummary,
+    retag: retagReport && !retagReport.error ? retagReport : null,
+    retagContamination: contamination && !contamination.error ? contamination : null,
     checkedAt: new Date().toISOString()
   };
 }

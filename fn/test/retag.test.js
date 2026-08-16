@@ -21,10 +21,17 @@ const RULE_TEXT =
 // A store whose every mutating entry point is spied on.
 function spyStore({ rows = [], raws = {}, analyzed = [] } = {}) {
   const calls = { enqueueAnalysis: 0, enqueueBackfill: 0, saveAnalysis: 0, setContentClass: [] };
+  const aggregates = new Map();
   return {
     calls,
+    aggregates,
     listRowsForRetag: async () => rows,
     listAnalyzedPosts: async () => analyzed,
+    saveAggregate: async (p, k, v) => { aggregates.set(`${p}|${k}`, v); },
+    getAggregate: async (p, k) => aggregates.get(`${p}|${k}`) || null,
+    listAggregates: async (p) => [...aggregates.entries()]
+      .filter(([key]) => key.startsWith(`${p}|`))
+      .map(([key, v]) => ({ period: key.split('|')[1], ...v })),
     getRaw: async (sub, utc, id, kind) => {
       const key = `${sub}|${id}|${kind || 'post'}`;
       if (!(key in raws)) throw new Error('blob missing');
@@ -205,6 +212,125 @@ test('the scan reports its own cap rather than looking complete', async () => {
   const out = await scanContamination({ store: spyStore({ analyzed, raws }), context: silent, limit: 4 });
   assert.strictEqual(out.capped, true);
   assert.strictEqual(out.rowsScanned, 4);
+});
+
+// ---------------------------------------------------------------------------
+// §3d — a long-running operation must not depend on its response arriving
+// ---------------------------------------------------------------------------
+//
+// POST /api/retag?contamination=1 hit the 4:00 Azure gateway cut on 2026-08-16.
+// The narrow/broad counts existed only in the severed response and were simply
+// lost, so the remediation could not be priced.
+
+test('retag persists its report before returning', async () => {
+  const store = spyStore({ rows: [megathread(0), writer(0)] });
+  const returned = await runRetag({ store, context: silent });
+
+  const persisted = store.aggregates.get('retag|latest');
+  assert.ok(persisted, 'the report must exist in aggregates, not only in the response');
+  assert.strictEqual(persisted.tagged.bot, returned.tagged.bot);
+  assert.strictEqual(persisted.scanned, returned.scanned);
+
+  const dated = [...store.aggregates.keys()].filter((k) => k.startsWith('retag|') && k !== 'retag|latest');
+  assert.strictEqual(dated.length, 1, 'plus a dated snapshot');
+});
+
+test('the report is persisted even when the body pass self-caps', async () => {
+  const rows = Array.from({ length: 10 }, (_, i) => ({
+    partitionKey: 'betareaders', rowKey: `t${i}`, author: `w${i}`, title: `t${i}`, createdUtc: 1 + i
+  }));
+  const raws = {};
+  for (let i = 0; i < 10; i++) raws[`betareaders|t${i}|post`] = { post: { selftext: RULE_TEXT }, comments: [] };
+
+  const store = spyStore({ rows, raws });
+  const out = await runRetag({ store, context: silent, bodies: true, bodyLimit: 4 });
+
+  assert.strictEqual(out.bodies.capped, true);
+  assert.ok(out.bodies.resumeAfter, 'a capped run records where to continue from');
+  const persisted = store.aggregates.get('retag|latest');
+  assert.ok(persisted, 'a capped run still persists its report');
+  assert.strictEqual(persisted.bodies.capped, true);
+  assert.strictEqual(persisted.bodies.resumeAfter, out.bodies.resumeAfter);
+});
+
+test('a capped body pass resumes rather than restarting', async () => {
+  const rows = Array.from({ length: 6 }, (_, i) => ({
+    partitionKey: 'betareaders', rowKey: `t${i}`, author: `w${i}`, title: `t${i}`, createdUtc: 1 + i
+  }));
+  const raws = {};
+  for (let i = 0; i < 6; i++) raws[`betareaders|t${i}|post`] = { post: { selftext: `body ${i}` }, comments: [] };
+
+  const first = await runRetag({ store: spyStore({ rows, raws }), context: silent, bodies: true, bodyLimit: 3 });
+  assert.strictEqual(first.bodies.read, 3);
+
+  const second = await runRetag({
+    store: spyStore({ rows, raws }), context: silent, bodies: true, bodyLimit: 3,
+    bodiesAfter: first.bodies.resumeAfter
+  });
+  assert.strictEqual(second.bodies.read, 3, 'the second pass reads the remaining rows, not the same three');
+  assert.strictEqual(second.bodies.capped, false, 'and reaches the end of the table');
+});
+
+test('a dry run neither writes tags nor persists a report', async () => {
+  const store = spyStore({ rows: [megathread(0)] });
+  await runRetag({ store, context: silent, dryRun: true });
+  assert.strictEqual(store.calls.setContentClass.length, 0);
+  assert.strictEqual(store.aggregates.get('retag|latest'), undefined);
+});
+
+test('retag publishes discovered hashes to the boilerplate registry', async () => {
+  // Eight rows sharing a long body, distinct ordinary authors — the general
+  // detector's case. The hashes must reach the registry so the analyze path can
+  // apply repeat-hash at point-of-analysis.
+  const rows = Array.from({ length: 8 }, (_, i) => ({
+    partitionKey: 'betareaders', rowKey: `t${i}`, author: `writer_${i}`,
+    title: `unique title ${i}`, createdUtc: 1 + i
+  }));
+  const raws = {};
+  for (let i = 0; i < 8; i++) raws[`betareaders|t${i}|post`] = { post: { selftext: RULE_TEXT }, comments: [] };
+
+  const store = spyStore({ rows, raws });
+  const out = await runRetag({ store, context: silent, bodies: true });
+
+  assert.strictEqual(out.registry.subsWritten, 1);
+  const row = store.aggregates.get('boilerplate-registry|betareaders');
+  assert.ok(row, 'a registry row must exist for the sub');
+  assert.ok(Object.keys(row.hashes).length >= 1);
+});
+
+test('the contamination scan persists its report and its resume cursor', async () => {
+  const analyzed = Array.from({ length: 10 }, (_, i) => ({
+    partitionKey: 'writing', rowKey: `r${i}`, createdUtc: 1, analysisJson: analysisClean
+  }));
+  const raws = {};
+  for (let i = 0; i < 10; i++) raws[`writing|r${i}|post`] = { post: {}, comments: [{ author: 'x', body: 'hi' }] };
+
+  const store = spyStore({ analyzed, raws });
+  const out = await scanContamination({ store, context: silent, limit: 4 });
+
+  const persisted = store.aggregates.get('retag-contamination|latest');
+  assert.ok(persisted, 'the counts must survive a severed response');
+  assert.strictEqual(persisted.narrow, out.narrow);
+  assert.strictEqual(persisted.broad, out.broad);
+  assert.strictEqual(persisted.capped, true);
+  assert.ok(persisted.resumeAfter, 'a capped scan records where to continue from');
+});
+
+test('a capped contamination scan resumes rather than rescanning', async () => {
+  const analyzed = Array.from({ length: 6 }, (_, i) => ({
+    partitionKey: 'writing', rowKey: `r${i}`, createdUtc: 1, analysisJson: analysisClean
+  }));
+  const raws = {};
+  for (let i = 0; i < 6; i++) raws[`writing|r${i}|post`] = { post: {}, comments: [{ author: 'x', body: 'hi' }] };
+
+  const first = await scanContamination({ store: spyStore({ analyzed, raws }), context: silent, limit: 3 });
+  assert.strictEqual(first.rowsScanned, 3);
+
+  const second = await scanContamination({
+    store: spyStore({ analyzed, raws }), context: silent, limit: 3, after: first.resumeAfter
+  });
+  assert.strictEqual(second.rowsScanned, 3);
+  assert.strictEqual(second.capped, false, 'the second pass finishes the table');
 });
 
 test('repeat-hash catches non-AutoModerator sticky text in comments', async () => {

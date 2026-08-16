@@ -176,7 +176,12 @@ Rules:
 - notable_quote: the single most vivid verbatim sentence capturing the emotional core; empty string if none.
 - summary: two sentences, neutral register.`;
 
-async function analyzePost(post, comments) {
+// `deps.chat` exists so tests can assert the CONSTRUCTED PROMPT directly rather
+// than inferring filtering from the model's output — asserting only that quotes
+// came out clean cannot distinguish filtering from the model happening not to
+// quote that comment (§4).
+async function analyzePost(post, comments, deps = {}) {
+  const chat = deps.chat || chatJson;
   // Engagement counts are deliberately NOT in the prompt. They are an Arctic
   // Shift capture-time snapshot with variable per-row lag, so showing them to
   // the model invites it to reason from what is mostly archiver timing (§3c).
@@ -195,7 +200,7 @@ ${(post.selftext || '(link/image post — no body)').slice(0, 6000)}
 
 TOP COMMENTS:
 ${commentBlock || '(none)'}`;
-  const result = await chatJson(ANALYSIS_SYSTEM, user, 'post_analysis', ANALYSIS_SCHEMA, 4000);
+  const result = await chat(ANALYSIS_SYSTEM, user, 'post_analysis', ANALYSIS_SCHEMA, 4000);
   const d = new Date(post.created_utc * 1000);
   // ISO week key, e.g. 2026-W33
   const jan1 = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));

@@ -32,19 +32,24 @@ app.http('retag', {
         store,
         context,
         minRepeats: config.boilerplateMinRepeats(),
-        minChars: config.boilerplateMinChars(),
+        minChars: config.boilerplateMinCharsBody(),
+        minTitleChars: config.boilerplateMinCharsTitle(),
         bodies: p.get('bodies') === '1',
         bodyLimit: num('bodyLimit', 2000),
+        bodiesAfter: p.get('bodiesAfter') || null,
         dryRun: p.get('dryRun') === '1'
       });
 
       if (p.get('contamination') === '1') {
+        // Persisted independently before this returns — a gateway cut must not
+        // be able to destroy the counts again (§3d).
         result.promptContamination = await scanContamination({
           store,
           context,
           limit: num('limit', 5000),
+          after: p.get('after') || null,
           minRepeats: config.boilerplateMinRepeats(),
-          minChars: config.boilerplateMinChars()
+          minChars: config.boilerplateMinCharsBody()
         });
       }
 

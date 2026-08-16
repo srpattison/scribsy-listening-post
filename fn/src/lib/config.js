@@ -124,10 +124,25 @@ function boilerplateMinRepeats(env = process.env) {
   return Number.isFinite(n) && n > 0 ? n : 5;
 }
 
-function boilerplateMinChars(env = process.env) {
-  const n = parseInt(env.BOILERPLATE_MIN_CHARS || '120', 10);
+// BOTH floors are settings. REPO-5 shipped a documented two-floor design with
+// only one of them configurable, which is how a tuned threshold silently
+// becomes an untuned one — the title floor could drift out of correctness with
+// no way to correct it short of a deploy.
+//
+// BOILERPLATE_MIN_CHARS_BODY (fallback: the original BOILERPLATE_MIN_CHARS, so
+// the live value keeps its meaning) and BOILERPLATE_MIN_CHARS_TITLE.
+function boilerplateMinCharsBody(env = process.env) {
+  const n = parseInt(env.BOILERPLATE_MIN_CHARS_BODY || env.BOILERPLATE_MIN_CHARS || '120', 10);
   return Number.isFinite(n) && n > 0 ? n : 120;
 }
+
+function boilerplateMinCharsTitle(env = process.env) {
+  const n = parseInt(env.BOILERPLATE_MIN_CHARS_TITLE || '40', 10);
+  return Number.isFinite(n) && n > 0 ? n : 40;
+}
+
+// Retained name for the body floor — every existing caller means "body".
+const boilerplateMinChars = boilerplateMinCharsBody;
 
 // Daily spend guardrail. There is no defensible constant for a budget ceiling —
 // 1500 was a stale copy of a live value that had since become 12000 — so an
@@ -153,6 +168,8 @@ module.exports = {
   commentMinChars,
   boilerplateMinRepeats,
   boilerplateMinChars,
+  boilerplateMinCharsBody,
+  boilerplateMinCharsTitle,
   dailyAnalyzeCap,
   COMMENT_POLICIES,
   DEFAULT_COMMENT_POLICY,

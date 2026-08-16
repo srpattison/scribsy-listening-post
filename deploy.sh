@@ -69,14 +69,17 @@ DEFAULT_BSKY_STREAMS_VALUE=$(printf '%s' "$DEFAULT_BSKY_STREAMS_VALUE" | tr -d '
 # item too widely to commit against the remaining budget. Measure, then set.
 DEFAULT_COMMENT_ANALYZE_POLICY='ingest-only'
 DEFAULT_COMMENT_MIN_CHARS='400'
-DEFAULT_DAILY_ANALYZE_CAP='12000'
+DEFAULT_DAILY_ANALYZE_CAP='20000'   # as-built live value 2026-08-16
 # Bot/boilerplate detection. AutoModerator megathreads run on a schedule, so a
 # 12-month backfill captures dozens of byte-identical copies per sub, each
 # carrying the sub's rule text. MIN_CHARS is the false-positive floor: ordinary
 # repeated human phrasing ("good luck with your draft") normalises to ~25 chars,
 # real boilerplate to several hundred.
 DEFAULT_BOILERPLATE_MIN_REPEATS='5'
-DEFAULT_BOILERPLATE_MIN_CHARS='120'
+DEFAULT_BOILERPLATE_MIN_CHARS_BODY='120'
+# Both floors are settings. A documented two-floor design with only one of them
+# configurable is how a tuned threshold silently becomes an untuned one.
+DEFAULT_BOILERPLATE_MIN_CHARS_TITLE='40'
 
 # Optional — only used if REDDIT_MODE=oauth after an approved registration.
 # Deliberately NOT defaulted here: `resolve` below must be able to tell "the
@@ -209,7 +212,8 @@ resolve "DAILY_ANALYZE_CAP"      "${DAILY_ANALYZE_CAP:-}"      "$DEFAULT_DAILY_A
 resolve "COMMENT_ANALYZE_POLICY" "${COMMENT_ANALYZE_POLICY:-}" "$DEFAULT_COMMENT_ANALYZE_POLICY"
 resolve "COMMENT_MIN_CHARS"      "${COMMENT_MIN_CHARS:-}"      "$DEFAULT_COMMENT_MIN_CHARS"
 resolve "BOILERPLATE_MIN_REPEATS" "${BOILERPLATE_MIN_REPEATS:-}" "$DEFAULT_BOILERPLATE_MIN_REPEATS"
-resolve "BOILERPLATE_MIN_CHARS"   "${BOILERPLATE_MIN_CHARS:-}"   "$DEFAULT_BOILERPLATE_MIN_CHARS"
+resolve "BOILERPLATE_MIN_CHARS_BODY"  "${BOILERPLATE_MIN_CHARS_BODY:-}"  "$DEFAULT_BOILERPLATE_MIN_CHARS_BODY"
+resolve "BOILERPLATE_MIN_CHARS_TITLE" "${BOILERPLATE_MIN_CHARS_TITLE:-}" "$DEFAULT_BOILERPLATE_MIN_CHARS_TITLE"
 resolve "MIN_COMMENTS_FOR_FETCH" "${MIN_COMMENTS_FOR_FETCH:-}" "3"
 resolve "REDDIT_MODE"            "${REDDIT_MODE:-}"            "arctic"
 resolve "REDDIT_CLIENT_ID"       "${REDDIT_CLIENT_ID:-}"       ""

@@ -142,6 +142,47 @@ reads are Flex wall-clock, the dominant cost of this system), `?dryRun=1`
 reports without writing, and `?contamination=1` adds the read-only measurement
 described below. Nothing on any of these paths enqueues analysis.
 
+### Bot text never enters the prompt
+
+Detection at tagging and rollup time is not enough. Comments are passed to the
+model as prompt context, so an unfiltered prompt bakes bot text into a
+genuinely human row's verbatim quote fields and its `comment_stance_mix` — and
+row-level tagging cannot reach that, because the row is correctly `human`.
+
+Filtering therefore happens at the analyze call site too, on four signals. Three
+are computable from a single comment: `AutoModerator` author,
+`distinguished == "moderator"`, `stickied`. The fourth is repeat-hash, which is
+a *corpus-level* question ("does this text recur ≥N times in this sub") that one
+`analyzePost` invocation cannot answer.
+
+So repeat-hash gets somewhere to live: a **persisted registry** of boilerplate
+hashes, partition `boilerplate-registry`, one row per subreddit. The passes that
+see the whole corpus — `retag` and the daily rollup — write it; the analyze path
+reads it through a short TTL cache. Writes **merge, never replace**: the rollup
+sees only titles, retag sees bodies from the `raw` archive, and the
+contamination scan sees comment bodies, so a replacing write would wipe what the
+others found. Registry misses are expected early — a hash only enters after
+`BOILERPLATE_MIN_REPEATS` sightings, and the per-row signals cover the gap.
+Nothing computes repeat counts at analyze time.
+
+Comments are **filtered, never deleted** — `raw` blobs stay complete, because the
+archive is the only path to remediation.
+
+`view=health` reports `filteredCommentsLast24h` broken down by reason, and each
+analysed row records `botCommentsFiltered` / `botCommentsFilterReasons`. Without
+that, "filtering works" and "no bot comments were present" are indistinguishable
+from the outside — and the second is what a broken filter looks like.
+
+### Long-running reports survive a gateway cut
+
+`retag` and its contamination scan write their full report to `aggregates`
+(`retag` / `retag-contamination`, RowKey `latest` plus a dated snapshot)
+**before returning**, and surface it in `view=health`. A `?contamination=1` run
+once hit the 4:00 Azure gateway cut and its counts were lost with the severed
+response. An operation that can be cut must not depend on its response reaching
+anyone. Capped runs record a `resumeAfter` cursor so a follow-up call continues
+rather than restarting (`?after=` / `?bodiesAfter=`).
+
 ### Known limit: prompt contamination predates row-level tagging
 
 Before comment ingestion existed, comments were passed to the model as prompt

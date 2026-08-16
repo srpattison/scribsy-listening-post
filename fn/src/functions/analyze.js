@@ -12,7 +12,36 @@ const store = require('../lib/store');
 const config = require('../lib/config');
 const commentPolicy = require('../lib/comment-policy');
 const { analyzePost, embedTexts, vecToB64 } = require('../lib/aoai');
+const { filterComments } = require('../lib/comment-filter');
+const registry = require('../lib/boilerplate-registry');
 const { SCHEMA_VERSION, mentionsAi } = require('../lib/taxonomy');
+
+// Registry lookups are cached across queue messages: the registry is small,
+// changes only when retag or the daily rollup writes it, and the analyze queue
+// calls this once per message.
+const registryCache = registry.createCache(store);
+
+// Daily tally of what the prompt-side filter removed. Without this there is no
+// way to tell "filtering works" from "no bot comments were present", which are
+// indistinguishable from the outside — and the second is what a broken filter
+// looks like (§3c).
+async function recordFiltered(reasons) {
+  const names = Object.keys(reasons || {});
+  if (!names.length) return;
+  const today = new Date().toISOString().slice(0, 10);
+  const prev = (await store.getAggregate('filter-counter', today)) || { total: 0, byReason: {} };
+  const byReason = { ...(prev.byReason || {}) };
+  let added = 0;
+  for (const [reason, n] of Object.entries(reasons)) {
+    byReason[reason] = (byReason[reason] || 0) + n;
+    added += n;
+  }
+  await store.saveAggregate('filter-counter', today, {
+    total: (prev.total || 0) + added,
+    byReason,
+    updatedAt: new Date().toISOString()
+  });
+}
 
 async function underDailyCap(context) {
   const { cap, configError } = config.dailyAnalyzeCap();
@@ -82,12 +111,30 @@ app.storageQueue('analyze', {
       return;
     }
 
-    const analysis = await analyzePost(raw.post, raw.comments || []);
+    // Prompt-side bot/boilerplate filtering (§3b). Bot text must not enter the
+    // prompt: once it does, it lands in this row's verbatim quote fields and
+    // comment_stance_mix, and no amount of row-level tagging can remove it —
+    // this row is genuinely human-authored.
+    //
+    // The raw blob is NOT modified; only what reaches the model is narrowed.
+    const boilerplateHashes = await registryCache.get(subreddit).catch(() => new Set());
+    const { kept: promptComments, reasons: filterReasons, filteredCount } =
+      filterComments(raw.comments || [], {
+        registry: boilerplateHashes,
+        minChars: config.boilerplateMinCharsBody()
+      });
+    if (filteredCount) {
+      context.log(`filtered ${filteredCount} bot/boilerplate comment(s) from ${subreddit}/${id}: ${JSON.stringify(filterReasons)}`);
+      await recordFiltered(filterReasons).catch((e) => context.warn(`filter counter failed: ${e.message}`));
+    }
+
+    const analysis = await analyzePost(raw.post, promptComments);
 
     // Subreddit-mention extraction (regex, zero LLM cost) — feeds the discovery
     // view. Comments have this extracted at ingest, because their analysis is
-    // gated and may never run.
-    const mentionText = [raw.post.title, raw.post.selftext, ...(raw.comments || []).map((c) => c.body)].join('\n');
+    // gated and may never run. Filtered comments are excluded here too: a bot
+    // reciting "see r/writing in the sidebar" is not a community citation.
+    const mentionText = [raw.post.title, raw.post.selftext, ...promptComments.map((c) => c.body)].join('\n');
     const mentions = new Set();
     for (const m of mentionText.matchAll(/\br\/([A-Za-z0-9_]{3,21})\b/g)) {
       const name = m[1].toLowerCase();
@@ -108,7 +155,11 @@ app.storageQueue('analyze', {
       embB64,
       schemaVersion: SCHEMA_VERSION,
       subMentionsCsv: [...mentions].slice(0, 30).join(','),
-      kind
+      kind,
+      // Per-row provenance for the filter: how many comments were withheld from
+      // this row's prompt, and which detector fired (§3c).
+      botCommentsFiltered: filteredCount,
+      botCommentsFilterReasons: filterReasons
     });
     await store.saveAggregate('analyze-counter', cap.today, { count: cap.counter.count + 1 });
     if (kind === 'comment') await bumpCommentCounter('analyzed').catch(() => {});

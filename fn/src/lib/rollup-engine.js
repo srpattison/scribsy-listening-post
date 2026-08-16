@@ -21,6 +21,7 @@ const { TOPICS, PILLAR_SIGNALS } = require('./taxonomy');
 const config = require('./config');
 const commentPolicy = require('./comment-policy');
 const contentClass = require('./content-class');
+const boilerplateRegistry = require('./boilerplate-registry');
 
 // ---------------------------------------------------------------------------
 // Salience — corpus-derived, never engagement-derived (§3c)
@@ -164,7 +165,8 @@ const topNObj = (m, n) => Object.fromEntries(Object.entries(m || {}).sort((a, b)
 function classifyUntagged(rows, env = process.env) {
   const opts = {
     minRepeats: config.boilerplateMinRepeats(env),
-    minChars: config.boilerplateMinChars(env)
+    minChars: config.boilerplateMinCharsBody(env),
+    minTitleChars: config.boilerplateMinCharsTitle(env)
   };
   const untagged = rows.filter((r) => !r.contentClass);
   if (!untagged.length) return rows;
@@ -843,6 +845,24 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
     await store.saveAggregate('rollup-health', 'latest', summary);
   } catch (e) {
     context?.error?.(`could not persist rollup health: ${e.message}`);
+  }
+
+  // Publish title-level boilerplate hashes to the registry so the analyze path
+  // can apply repeat-hash at point-of-analysis (§3a). The rollup only sees
+  // titles — bodies live in the raw archive and are retag's job — so this
+  // MERGES rather than replaces.
+  try {
+    const titleIndex = contentClass.buildRepeatIndex(
+      rows.map((r) => ({ subreddit: r.subreddit, title: r.title, body: '' })),
+      { minChars: config.boilerplateMinCharsBody(env), minTitleChars: config.boilerplateMinCharsTitle(env) }
+    );
+    summary.boilerplateRegistry = await boilerplateRegistry.merge(
+      store,
+      boilerplateRegistry.fromRepeatIndex(titleIndex, { minRepeats: config.boilerplateMinRepeats(env) }),
+      { now, context }
+    );
+  } catch (e) {
+    context?.warn?.(`boilerplate registry update failed (non-fatal): ${e.message}`);
   }
 
   // Brain hook: file a digest trace when momentum signals fire.

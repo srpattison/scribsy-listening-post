@@ -130,7 +130,10 @@ async function getPostRow(subreddit, postId) {
   }
 }
 
-async function saveAnalysis(subreddit, postId, analysis, { embB64 = '', schemaVersion = 0, subMentionsCsv = '', kind = 'post' } = {}) {
+async function saveAnalysis(subreddit, postId, analysis, {
+  embB64 = '', schemaVersion = 0, subMentionsCsv = '', kind = 'post',
+  botCommentsFiltered = 0, botCommentsFilterReasons = null
+} = {}) {
   // analysisJson gets its own property budget and is shrunk by dropping whole
   // fields, never by slicing the encoded string — a sliced JSON string parses
   // as garbage and silently drops the row from every aggregate downstream.
@@ -149,6 +152,11 @@ async function saveAnalysis(subreddit, postId, analysis, { embB64 = '', schemaVe
       subMentionsCsv: String(subMentionsCsv).slice(0, 2000),
       analysisTruncated: packed.dropped.length ? packed.dropped.join(',') : '',
       analysisJson: packed.json,
+      // What the prompt-side filter withheld from this row (§3c).
+      botCommentsFiltered,
+      botCommentsFilterReasons: botCommentsFilterReasons && Object.keys(botCommentsFilterReasons).length
+        ? JSON.stringify(botCommentsFilterReasons).slice(0, 500)
+        : '',
       aiRelated: !!analysis.ai_related,
       stance: analysis.stance_on_ai || 'na',
       experience: (analysis.persona && analysis.persona.experience) || 'unknown',
