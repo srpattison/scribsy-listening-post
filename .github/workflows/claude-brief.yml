@@ -1,0 +1,45 @@
+name: claude-brief
+run-name: "${{ github.event.client_payload.brief_title || 'claude-brief' }}"
+on:
+  repository_dispatch:
+    types: [claude-brief]
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  id-token: write
+  checks: read
+  actions: read
+  statuses: read
+concurrency: claude-brief-${{ github.event.client_payload.brief_page }}
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: materialize brief
+        env:
+          BRIEF_JSON: ${{ toJSON(github.event.client_payload.brief) }}
+        run: node -e "process.stdout.write(JSON.parse(process.env.BRIEF_JSON))" > BRIEF.md && head -c 400 BRIEF.md
+
+      - uses: anthropics/claude-code-action@v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          show_full_output: true
+          prompt: |
+            Execute the brief in BRIEF.md exactly. Hard rules: obey this repo's CLAUDE.md; work on branch feat/<brief-id> and open a PR — never push main — unless BRIEF.md explicitly authorizes main; run every acceptance check in BRIEF.md before claiming done; write REPORT.md (SHAs, checks run + results, counts, deviations, STOP conditions) as the last act, always, even on failure; if any acceptance check fails, scope is exceeded, or BRIEF.md is missing/malformed → STOP, write REPORT.md explaining why, exit nonzero. Run shell commands ONE per Bash call — never chain commands with && or ; — and in particular run git push and gh pr create as two separate Bash calls.
+          claude_args: "--max-turns 300${{ github.event.client_payload.model && format(' --model {0}', github.event.client_payload.model) || '' }} --allowedTools Bash(git:*),Bash(gh:*),Bash(npm:*),Bash(node:*),Bash(npx:*),Bash(jq:*),Read,Write,Edit,Glob,Grep,TodoWrite,Bash(mkdir:*),Bash(ls:*),Bash(cat:*),Bash(mv:*),Bash(cp:*),Bash(sed:*),Bash(find:*),Bash(wc:*),Bash(diff:*),Bash(head:*),Bash(tail:*)"
+
+      - name: upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report
+          path: |
+            BRIEF.md
+            REPORT.md
+            reports/
+            RESUME.md
+          if-no-files-found: warn
