@@ -169,25 +169,38 @@ async function getPostRow(subreddit, postId) {
   }
 }
 
-async function saveAnalysis(subreddit, postId, analysis, {
+// The provenance stamp columns, in one place: the entity builder writes them,
+// countPosts' select reads them, and the health tally counts them — a column
+// renamed in one spot without the others is exactly the drift class the
+// stamps exist to prevent.
+const PROVENANCE_COLUMNS = [
+  'analysisInputHash', 'analysisPromptVersion', 'analysisRegistryVersion',
+  'analysisFilterVersion', 'analysisAt', 'analysisModel'
+];
+
+// Pure entity builder for saveAnalysis, exported so tests can assert the REAL
+// columns written to the row rather than stopping one seam short at the
+// worker→store interface (review finding).
+//
+// Provenance stamps (CB-LISTEN-CORRECT-1 §2): a stamp is honoured only when it
+// carries the load-bearing analysisInputHash — a partial stamp would otherwise
+// write populated version columns against an empty input hash, a row the
+// health tally reads as pre-provenance history while looking half-stamped.
+// With no usable stamp, every stamp column is written as EMPTY STRING rather
+// than omitted: this row is being (re)written under 'Merge', and omitting the
+// columns would leave any PREVIOUS stamps standing against the NEW
+// analysisJson — a stale confident answer, the exact shape stamps exist to
+// kill. Empty string reads as unstamped everywhere (falsy), so fresh rows
+// count identically either way.
+function analysisEntity(subreddit, postId, analysis, {
   embB64 = '', schemaVersion = 0, subMentionsCsv = '', kind = 'post',
   botCommentsFiltered = 0, botCommentsFilterReasons = null,
   provenanceStamp = null
 } = {}) {
-  // Provenance stamps (CB-LISTEN-CORRECT-1 §2). Written only when the caller
-  // supplied a stamp taken at the model call — an absent stamp means "analysed
-  // before provenance existed" (or a call-site defect, which the worker logs)
-  // and the columns are left off entirely rather than written empty, so the
-  // pre-stamp population stays countable.
-  const stamp = provenanceStamp
-    ? {
-      analysisInputHash: String(provenanceStamp.analysisInputHash || ''),
-      analysisPromptVersion: String(provenanceStamp.analysisPromptVersion || ''),
-      analysisRegistryVersion: String(provenanceStamp.analysisRegistryVersion || ''),
-      analysisFilterVersion: String(provenanceStamp.analysisFilterVersion || ''),
-      analysisAt: String(provenanceStamp.analysisAt || '')
-    }
-    : {};
+  const usable = provenanceStamp && provenanceStamp.analysisInputHash;
+  const stamp = Object.fromEntries(
+    PROVENANCE_COLUMNS.map((col) => [col, usable ? String(provenanceStamp[col] || '') : ''])
+  );
   // analysisJson gets its own property budget and is shrunk by dropping whole
   // fields, never by slicing the encoded string — a sliced JSON string parses
   // as garbage and silently drops the row from every aggregate downstream.
@@ -195,8 +208,8 @@ async function saveAnalysis(subreddit, postId, analysis, {
   // analysisJson out of the property cap.
   const packed = tablesafe.packProperty(analysis);
   const emb = embB64 && embB64.length <= tablesafe.MAX_PROP_CHARS ? embB64 : '';
-  await postsTable().upsertEntity(
-    {
+  return {
+    entity: {
       partitionKey: subreddit.toLowerCase(),
       rowKey: rowKeyFor({ id: postId, kind }),
       kind,
@@ -220,8 +233,13 @@ async function saveAnalysis(subreddit, postId, analysis, {
       week: analysis.week || '',
       ...stamp
     },
-    'Merge'
-  );
+    mode: 'Merge'
+  };
+}
+
+async function saveAnalysis(subreddit, postId, analysis, opts = {}) {
+  const { entity, mode } = analysisEntity(subreddit, postId, analysis, opts);
+  await postsTable().upsertEntity(entity, mode);
 }
 
 async function listAnalyzedPosts() {
@@ -243,8 +261,7 @@ async function countPosts() {
   const tally = provenanceLib.createProvenanceTally();
   const iter = postsTable().listEntities({
     queryOptions: {
-      select: ['RowKey', 'analyzed', 'kind',
-        'analysisInputHash', 'analysisPromptVersion', 'analysisRegistryVersion', 'analysisFilterVersion']
+      select: ['RowKey', 'analyzed', 'kind', ...PROVENANCE_COLUMNS]
     }
   });
   for await (const e of iter) {
@@ -508,6 +525,8 @@ module.exports = {
   enqueueRetag,
   enqueueAudit,
   saveAnalysis,
+  analysisEntity,
+  PROVENANCE_COLUMNS,
   listAnalyzedPosts,
   listCommentTriage,
   listRowsForRetag,

@@ -60,21 +60,42 @@ test('registryVersionOf is order-insensitive, discriminates content, and gives t
   assert.notStrictEqual(provenance.registryVersionOf(new Set()), provenance.registryVersionOf(['h1']));
 });
 
-test('filterVersion is stable across calls, and shifts when an effective threshold shifts', () => {
+test('filterVersion is stable across calls, and shifts when the analyze-time threshold shifts', () => {
   const v1 = provenance.filterVersion();
   const v2 = provenance.filterVersion();
-  assert.strictEqual(v1, v2, 'same rule-set source + same thresholds must stamp identically');
+  assert.strictEqual(v1, v2, 'same rule-set source + same threshold must stamp identically');
 
   const prev = process.env.BOILERPLATE_MIN_CHARS_BODY;
   process.env.BOILERPLATE_MIN_CHARS_BODY = '999';
   try {
     assert.notStrictEqual(provenance.filterVersion(), v1,
-      'a threshold change alters filtering behaviour without a code change — the stamp must move with it');
+      'the body floor alters analyze-time filtering without a code change — the stamp must move with it');
   } finally {
     if (prev === undefined) delete process.env.BOILERPLATE_MIN_CHARS_BODY;
     else process.env.BOILERPLATE_MIN_CHARS_BODY = prev;
   }
   assert.strictEqual(provenance.filterVersion(), v1, 'restoring the threshold restores the version');
+});
+
+test('filterVersion does NOT move for registry-construction-only knobs — identical behaviour must not split into distinct versions', () => {
+  // Review finding: title floor and repeat threshold shape registry
+  // CONSTRUCTION only, already captured exactly by analysisRegistryVersion
+  // hashing the resulting Set. Folding them here split identical analyze-time
+  // behaviour into distinct filter versions.
+  const v1 = provenance.filterVersion();
+  const prevTitle = process.env.BOILERPLATE_MIN_CHARS_TITLE;
+  const prevRepeats = process.env.BOILERPLATE_MIN_REPEATS;
+  process.env.BOILERPLATE_MIN_CHARS_TITLE = '5';
+  process.env.BOILERPLATE_MIN_REPEATS = '999';
+  try {
+    assert.strictEqual(provenance.filterVersion(), v1,
+      'knobs the analyze-time filter never consults must not move its version');
+  } finally {
+    if (prevTitle === undefined) delete process.env.BOILERPLATE_MIN_CHARS_TITLE;
+    else process.env.BOILERPLATE_MIN_CHARS_TITLE = prevTitle;
+    if (prevRepeats === undefined) delete process.env.BOILERPLATE_MIN_REPEATS;
+    else process.env.BOILERPLATE_MIN_REPEATS = prevRepeats;
+  }
 });
 
 test('analysisPromptVersion is stable within a process and derived from the live prompt artefacts', () => {
@@ -112,6 +133,29 @@ test('the input hash matches the EXACT strings the chat client received — comp
   const { system, user } = spy.last();
   assert.strictEqual(result._provenance.analysisInputHash, provenance.hashAnalysisInput(system, user),
     'the stamp must hash what was actually sent — anything else records the intention, not the fact');
+});
+
+test('the input hash covers the TRUNCATED assembly: text beyond the 6000-char body cut changes neither prompt nor hash', async () => {
+  // Review finding: without this, an implementation hashing the PRE-truncation
+  // assembly — recording what was intended, not what was sent — would pass.
+  const longBody = 'x'.repeat(7000);
+  const s1 = spyChat();
+  const r1 = await analyzePost({ ...POST, selftext: longBody }, [], { chat: s1.chat });
+  assert.strictEqual(r1._provenance.analysisInputHash,
+    provenance.hashAnalysisInput(s1.last().system, s1.last().user),
+    'a truncated prompt must be hashed as sent');
+
+  // Vary ONLY the region the .slice(0, 6000) cut discards.
+  const s2 = spyChat();
+  const r2 = await analyzePost({ ...POST, selftext: longBody.slice(0, 6500) + 'DIFFERENT TAIL' }, [], { chat: s2.chat });
+  assert.strictEqual(s1.last().user, s2.last().user, 'the prompts must be identical after truncation');
+  assert.strictEqual(r1._provenance.analysisInputHash, r2._provenance.analysisInputHash,
+    'text the model never saw must not move the input hash');
+
+  // And varying INSIDE the kept region must move it.
+  const s3 = spyChat();
+  const r3 = await analyzePost({ ...POST, selftext: 'y' + longBody.slice(1) }, [], { chat: s3.chat });
+  assert.notStrictEqual(r1._provenance.analysisInputHash, r3._provenance.analysisInputHash);
 });
 
 // ---------------------------------------------------------------------------
@@ -165,7 +209,7 @@ test('§7.1: processAnalyzeJob stamps all five provenance fields on the saved ro
     const { analysis, meta } = storeImpl.saved[0];
     const stamp = meta.provenanceStamp;
     assert.ok(stamp, 'the saved row must carry a provenance stamp');
-    for (const field of ['analysisInputHash', 'analysisPromptVersion', 'analysisRegistryVersion', 'analysisFilterVersion', 'analysisAt']) {
+    for (const field of ['analysisInputHash', 'analysisPromptVersion', 'analysisRegistryVersion', 'analysisFilterVersion', 'analysisAt', 'analysisModel']) {
       assert.ok(stamp[field], `stamp field ${field} must be present and non-empty`);
     }
     const { system, user } = spy.last();
@@ -175,7 +219,20 @@ test('§7.1: processAnalyzeJob stamps all five provenance fields on the saved ro
       'with no registry rows stored, the stamp records the empty-registry state that actually filtered this row');
     assert.strictEqual(stamp.analysisFilterVersion, provenance.filterVersion());
     assert.ok(!Number.isNaN(Date.parse(stamp.analysisAt)), 'analysisAt must be a real timestamp');
+    assert.strictEqual(stamp.analysisModel, require('../src/lib/aoai').deploymentInForce(),
+      'the deployment the call was sent to must be recorded — an AOAI_DEPLOYMENT swap is otherwise invisible');
     assert.ok(!('_provenance' in analysis), 'the stamp must never leak into analysisJson');
+
+    // One seam deeper (review finding): the REAL entity builder writes every
+    // stamp column, and the countPosts select reads the same names.
+    const store = require('../src/lib/store');
+    const { entity, mode } = store.analysisEntity('writing', 'p1', analysis, meta);
+    assert.strictEqual(mode, 'Merge');
+    for (const col of store.PROVENANCE_COLUMNS) {
+      assert.ok(entity[col], `entity column ${col} must be written non-empty for a stamped analysis`);
+    }
+    assert.strictEqual(entity.analysisInputHash, stamp.analysisInputHash);
+    assert.ok(!('_provenance' in JSON.parse(entity.analysisJson)), 'the packed analysisJson must not carry the stamp');
   } finally {
     if (prevCap === undefined) delete process.env.DAILY_ANALYZE_CAP;
     else process.env.DAILY_ANALYZE_CAP = prevCap;
@@ -207,6 +264,28 @@ test('the registry version stamped is the version of the exact Set that filtered
   } finally {
     if (prevCap === undefined) delete process.env.DAILY_ANALYZE_CAP;
     else process.env.DAILY_ANALYZE_CAP = prevCap;
+  }
+});
+
+test('a stampless or partial save CLEARS the stamp columns instead of leaving stale stamps standing under Merge', () => {
+  // Review finding: saveAnalysis writes under 'Merge', so omitting the stamp
+  // columns on a (defective) stampless RE-analysis would leave the previous
+  // stamps standing against the new analysisJson — a stale confident answer.
+  const store = require('../src/lib/store');
+  const analysis = { ai_related: false, stance_on_ai: 'na', topics: [], notable_quote: '', summary: '' };
+
+  const bare = store.analysisEntity('writing', 'p9', analysis, { provenanceStamp: null });
+  for (const col of store.PROVENANCE_COLUMNS) {
+    assert.strictEqual(bare.entity[col], '', `${col} must be explicitly cleared, not omitted`);
+  }
+
+  // A partial stamp missing the load-bearing input hash is treated as absent
+  // entirely — never four populated version columns against an empty hash.
+  const partial = store.analysisEntity('writing', 'p9', analysis, {
+    provenanceStamp: { analysisPromptVersion: 'pX', analysisFilterVersion: 'fX' }
+  });
+  for (const col of store.PROVENANCE_COLUMNS) {
+    assert.strictEqual(partial.entity[col], '', `${col} must be cleared when the stamp lacks analysisInputHash`);
   }
 });
 

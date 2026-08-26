@@ -12,6 +12,11 @@
 const { TOPICS, STANCES, EXPERIENCE, STANCE_BASIS, DEALBREAKER_KINDS } = require('./taxonomy');
 const provenance = require('./analysis-provenance');
 
+// Single source for the chat deployment in force — used by cfg() for the
+// request and by analyzePost for the analysisModel provenance stamp, so the
+// stamp can never disagree with what the call was actually sent to.
+const deploymentInForce = () => process.env.AOAI_DEPLOYMENT || 'chat';
+
 function cfg() {
   const endpoint = process.env.AOAI_ENDPOINT;
   const key = process.env.AOAI_KEY;
@@ -19,7 +24,7 @@ function cfg() {
   return {
     endpoint: endpoint.replace(/\/+$/, ''),
     key,
-    deployment: process.env.AOAI_DEPLOYMENT || 'chat'
+    deployment: deploymentInForce()
   };
 }
 
@@ -221,7 +226,10 @@ ${commentBlock || '(none)'}`;
   const _provenance = {
     analysisInputHash: provenance.hashAnalysisInput(ANALYSIS_SYSTEM, user),
     analysisPromptVersion: analysisPromptVersion(),
-    analysisAt: new Date().toISOString()
+    analysisAt: new Date().toISOString(),
+    // Deployment name only — Azure can update the model behind a deployment
+    // name, and that channel is not observable from here (review finding).
+    analysisModel: deploymentInForce()
   };
   const result = await chat(ANALYSIS_SYSTEM, user, 'post_analysis', ANALYSIS_SCHEMA, 4000);
   const d = new Date(post.created_utc * 1000);
@@ -422,5 +430,5 @@ function cosine(a, b) {
 module.exports = {
   analyzePost, synthesizePersonas, normalizeFeatures, strategyBrief, askCorpus,
   standingQuestions, embedTexts, vecToB64, b64ToVec, cosine, EMBED_DIMS,
-  analysisPromptVersion, ANALYSIS_SYSTEM, ANALYSIS_SCHEMA
+  analysisPromptVersion, deploymentInForce, ANALYSIS_SYSTEM, ANALYSIS_SCHEMA
 };

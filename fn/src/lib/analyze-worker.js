@@ -127,13 +127,15 @@ async function processAnalyzeJob(job, context, { storeImpl = store, chat, regist
 
   const analysis = await analyzePost(raw.post, promptComments, chat ? { chat } : undefined);
 
-  // Provenance stamps (CB-LISTEN-CORRECT-1 §2). Input hash, prompt version and
-  // timestamp were taken at the model call site inside analyzePost; the
-  // registry version hashes the exact per-sub Set that filtered this row's
-  // prompt, and the filter version hashes the classifier rule-set in force.
-  // All derivations live in lib/analysis-provenance.js. If the call-site stamp
-  // is ever absent that is a defect worth hearing about, and the row is left
-  // UNSTAMPED rather than stamped with guesses.
+  // Provenance stamps (CB-LISTEN-CORRECT-1 §2). Input hash, prompt version,
+  // model deployment and timestamp were taken at the model call site inside
+  // analyzePost; the registry version hashes the exact per-sub Set that
+  // filtered this row's prompt, and the filter version hashes the classifier
+  // rule-set in force. All derivations live in lib/analysis-provenance.js.
+  // If the call-site stamp is ever absent that is a defect worth hearing
+  // about, and store.analysisEntity CLEARS the row's stamp columns rather
+  // than guessing — or, on a re-analysis, leaving stale stamps standing
+  // against the new analysis.
   const callSiteStamp = analysis._provenance || null;
   delete analysis._provenance; // never let the stamp leak into analysisJson
   let stamp = null;
@@ -144,7 +146,7 @@ async function processAnalyzeJob(job, context, { storeImpl = store, chat, regist
       analysisFilterVersion: provenance.filterVersion()
     };
   } else {
-    context.warn(`analysis for ${subreddit}/${id} carried no call-site provenance — row will be unstamped`);
+    context.warn(`analysis for ${subreddit}/${id} carried no call-site provenance — stamp columns will be cleared, not guessed`);
   }
 
   // Subreddit-mention extraction (regex, zero LLM cost) — feeds the discovery

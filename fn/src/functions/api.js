@@ -12,7 +12,7 @@ const config = require('../lib/config');
 const boilerplateRegistry = require('../lib/boilerplate-registry');
 const provenance = require('../lib/analysis-provenance');
 const backfillSweep = require('../lib/backfill-sweep');
-const { askCorpus, embedTexts, b64ToVec, cosine, analysisPromptVersion } = require('../lib/aoai');
+const { askCorpus, embedTexts, b64ToVec, cosine, analysisPromptVersion, deploymentInForce } = require('../lib/aoai');
 
 const VIEWS = ['meta', 'heatmap', 'stance', 'distributions', 'features', 'minbar', 'trust', 'cohort', 'quotes', 'personas', 'brief', 'competitors', 'resonance', 'signals', 'discovery'];
 
@@ -49,7 +49,8 @@ function currentAnalysisVersions() {
   try {
     return {
       analysisPromptVersion: analysisPromptVersion(),
-      analysisFilterVersion: provenance.filterVersion()
+      analysisFilterVersion: provenance.filterVersion(),
+      analysisModel: deploymentInForce()
       // analysisRegistryVersion is per-sub live state, resolved per row at
       // analyze time — there is no single "current" value to show here.
     };

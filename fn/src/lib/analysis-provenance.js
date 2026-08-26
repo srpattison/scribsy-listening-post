@@ -16,7 +16,7 @@
 // for. A content-derived version cannot drift because there is no second copy
 // to go stale.
 //
-// The five stamp fields (written by store.saveAnalysis, from analyze-worker):
+// The stamp fields (written by store.saveAnalysis, from analyze-worker):
 //   analysisPromptVersion   — hash of the live system prompt + response schema
 //                             + the prompt-assembly code itself (aoai.js
 //                             computes it via promptVersionFrom, from the
@@ -25,9 +25,9 @@
 //                             for THIS row's prompt filtering (per-sub, live).
 //   analysisFilterVersion   — hash of the bot/boilerplate classifier rule-set
 //                             SOURCE (content-class.js + comment-filter.js)
-//                             plus the threshold values in force, because the
-//                             thresholds are env-tunable and change behaviour
-//                             without a code change.
+//                             plus the analyze-time body floor in force, the
+//                             one env-tunable threshold that changes filtering
+//                             behaviour without a code change.
 //   analysisInputHash       — hash of the EXACT prompt strings sent to the
 //                             model, computed at the call site in
 //                             aoai.analyzePost AFTER all assembly — never
@@ -35,6 +35,13 @@
 //                             reproduce the assumption instead of recording
 //                             the fact.
 //   analysisAt              — ISO timestamp taken when the model call is made.
+//   analysisModel           — the deployment name the call was sent to
+//                             (review finding: without it, an AOAI_DEPLOYMENT
+//                             swap changes behaviour with every other stamp
+//                             identical, and "re-analyse rows produced by the
+//                             old model" is inexpressible). Residual: Azure
+//                             can update the model BEHIND a deployment name;
+//                             that channel is not client-observable here.
 //
 // Existing rows have no stamps and are NEVER back-filled with guesses: an
 // absent stamp means "analysed before provenance existed" and is itself
@@ -85,16 +92,23 @@ function promptVersionFrom({ system, schema, assembly }) {
 // value of its own: "filtered against nothing" is a real, recordable state.
 function registryVersionOf(hashes) {
   const list = [...(hashes || [])].map(String).sort();
-  return hash32(list.join(','));
+  return hash32(list.join('\u0000')); // NUL, not ',' — registry hashes are hex today, but boundaries must not depend on that
 }
 
 // --- analysisFilterVersion ---------------------------------------------------
 
 // The classifier rule-set is code (content-class.js defines the detectors,
 // comment-filter.js applies them at analyze time), so its version is a hash of
-// that source, read from disk once per process. The env-tunable thresholds
-// change filtering behaviour without a code change, so the effective values in
-// force are folded in at stamp time.
+// that source, read from disk once per process. The one env-tunable threshold
+// the ANALYZE-TIME filter consults - the body floor - is folded in at stamp
+// time because it changes filtering behaviour without a code change.
+//
+// Deliberately NOT folded in (review finding): BOILERPLATE_MIN_CHARS_TITLE and
+// BOILERPLATE_MIN_REPEATS shape registry CONSTRUCTION only, which
+// analysisRegistryVersion already captures exactly by hashing the resulting
+// Set - including them here split identical analyze-time behaviour into
+// distinct version values (probe-confirmed: filterComments output was
+// bit-identical across those knob changes while the version moved).
 let filterSourceHashMemo = null;
 function filterSourceHash() {
   if (filterSourceHashMemo) return filterSourceHashMemo;
@@ -107,11 +121,7 @@ function filterSourceHash() {
 function filterVersion({ config = require('./config') } = {}) {
   return hash32(joinParts(
     filterSourceHash(),
-    JSON.stringify({
-      minCharsBody: config.boilerplateMinCharsBody(),
-      minCharsTitle: config.boilerplateMinCharsTitle(),
-      minRepeats: config.boilerplateMinRepeats()
-    })
+    JSON.stringify({ minCharsBody: config.boilerplateMinCharsBody() })
   ));
 }
 
@@ -130,9 +140,10 @@ function createProvenanceTally({ distinctCap = DISTINCT_VERSION_CAP } = {}) {
   const fields = {
     promptVersions: new Map(),
     registryVersions: new Map(),
-    filterVersions: new Map()
+    filterVersions: new Map(),
+    modelVersions: new Map()
   };
-  const overflow = { promptVersions: 0, registryVersions: 0, filterVersions: 0 };
+  const overflow = { promptVersions: 0, registryVersions: 0, filterVersions: 0, modelVersions: 0 };
   let stamped = 0;
   let unstamped = 0;
 
@@ -152,6 +163,7 @@ function createProvenanceTally({ distinctCap = DISTINCT_VERSION_CAP } = {}) {
       bump('promptVersions', String(row.analysisPromptVersion || '(absent)'));
       bump('registryVersions', String(row.analysisRegistryVersion || '(absent)'));
       bump('filterVersions', String(row.analysisFilterVersion || '(absent)'));
+      bump('modelVersions', String(row.analysisModel || '(absent)'));
     },
     result() {
       const out = {
