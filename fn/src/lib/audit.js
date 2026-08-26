@@ -24,6 +24,7 @@
 //                               merged accumulator is.
 
 const cc = require('./content-class');
+const config = require('./config');
 const { classifyComment } = require('./comment-filter');
 const { kindOf, idFromRowKey } = require('./rowkeys');
 
@@ -56,12 +57,19 @@ const QUOTE_SAMPLE_CAP_PER_PARTITION = 5;
 // reasoning applies: short bodies genuinely recur between unrelated posts.
 const DUP_MIN_CHARS = cc.DEFAULT_MIN_CHARS;
 
-// Hard cap on distinct body hashes tracked for duplicate detection across the
+// Cap on distinct body hashes tracked for duplicate detection across the
 // whole corpus. Not a per-sub cap like boilerplate-registry's (duplicates are
-// cross-sub by definition) — a corpus-wide one. Chosen so the accumulator
-// stays well inside a sane aggregates-row size; logged explicitly if hit
+// cross-sub by definition) — a corpus-wide one, reported explicitly if hit
 // rather than silently dropping detection (§8c's own "no silent caps" bar).
-const MAX_TRACKED_HASHES = 20000;
+//
+// CB-LISTEN-CORRECT-1 §5: the original hard-coded 20,000 SATURATED
+// (hashCapHit: true at trackedHashCount = 20,000), which censored the live
+// number — repostRows 2,023 became a floor, not a count. The ceiling is now
+// configurable (AUDIT_MAX_TRACKED_HASHES) with a default sized against the
+// ~190k-real-row corpus and measured accumulator memory — see
+// config.auditMaxTrackedHashes for the measurements. `hashCapHit` stays
+// reported so a future saturation is visible, never silently truncating again.
+const maxTrackedHashes = () => config.auditMaxTrackedHashes();
 
 // Subs the brief names explicitly as near-entirely or substantially fiction.
 const FICTION_HEAVY_SUBS = new Set(['destructivereaders', 'betareaders', 'writing', 'fictionwriting']);
@@ -446,11 +454,12 @@ function reservoirAdd(bucket, item, cap, rand) {
 // Merge one chunk's LOCAL findings into a persisted running accumulator.
 // `acc` is either `null`/`undefined` (fresh start) or a previously-merged
 // accumulator — validated above, not assumed. Duplicate-hash tracking is
-// capped at MAX_TRACKED_HASHES distinct hashes corpus-wide, and quote-sample
-// tracking at QUOTE_SAMPLE_CAP_PER_PARTITION per (subreddit, bucket) — both
-// caps are reported in the accumulator (`hashCapHit`/`trackedHashCount`,
+// capped at maxTrackedHashes() distinct hashes corpus-wide (env-configurable,
+// overridable per call for tests), and quote-sample tracking at
+// QUOTE_SAMPLE_CAP_PER_PARTITION per (subreddit, bucket) — both caps are
+// reported in the accumulator (`hashCapHit`/`trackedHashCount`,
 // `quoteSamples[sub][bucket].seen` vs `.items.length`), never silently.
-function mergeChunk(acc, chunk, { rand = Math.random } = {}) {
+function mergeChunk(acc, chunk, { rand = Math.random, maxTrackedHashes: hashCap = maxTrackedHashes() } = {}) {
   if (acc != null) validateAccumulator(acc); // requirement: reject bad input, don't patch around it
   const next = acc ? JSON.parse(JSON.stringify(acc)) : freshAccumulator();
   next.rowsScanned += chunk.rowsScanned;
@@ -473,7 +482,7 @@ function mergeChunk(acc, chunk, { rand = Math.random } = {}) {
   for (const hit of chunk.hashHits || []) {
     let entry = next.hashes[hit.hash];
     if (!entry) {
-      if (next.trackedHashCount >= MAX_TRACKED_HASHES) { next.hashCapHit = true; continue; }
+      if (next.trackedHashCount >= hashCap) { next.hashCapHit = true; continue; }
       entry = next.hashes[hit.hash] = { count: 0, subs: [], samples: [] };
       next.trackedHashCount++;
     }
@@ -496,7 +505,7 @@ function mergeChunk(acc, chunk, { rand = Math.random } = {}) {
 }
 
 // Derive the reportable duplicate/crosspost summary from a merged accumulator.
-function duplicateSummary(acc) {
+function duplicateSummary(acc, { maxTrackedHashes: hashCap = maxTrackedHashes() } = {}) {
   const entries = Object.entries(acc.hashes || {});
   const crossposts = entries.filter(([, e]) => e.subs.length > 1);
   const reposts = entries.filter(([, e]) => e.subs.length === 1 && e.count > 1);
@@ -513,12 +522,12 @@ function duplicateSummary(acc) {
     top20,
     hashCapHit: !!acc.hashCapHit,
     trackedHashCount: acc.trackedHashCount || 0,
-    maxTrackedHashes: MAX_TRACKED_HASHES
+    maxTrackedHashes: hashCap
   };
 }
 
 module.exports = {
-  EMPTY_MIN_CHARS, QUOTE_MIN_CHARS, DUP_MIN_CHARS, MAX_TRACKED_HASHES,
+  EMPTY_MIN_CHARS, QUOTE_MIN_CHARS, DUP_MIN_CHARS, maxTrackedHashes,
   QUOTE_SAMPLE_CAP_PER_PARTITION,
   isEmptyOrRemoved, looksNonEnglish, quoteFieldsOf, classifyQuote,
   tableChecks, scanChunk, mergeChunk, duplicateSummary,

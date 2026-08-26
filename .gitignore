@@ -1,0 +1,5 @@
+# Local install artifacts — the deploy path (deploy.sh) installs fresh, and the
+# repo has never carried a lockfile; keeping it that way deliberately so the
+# remote build's behaviour does not change underneath deploy.sh.
+node_modules/
+fn/package-lock.json

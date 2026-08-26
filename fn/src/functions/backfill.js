@@ -61,10 +61,9 @@ async function admitComment(comment, counters) {
 
 // Watermark namespaces are SEPARATE per walk kind. The post walks are complete
 // 12-month walks and must never be restarted by a comment walk (§3a.4).
-const watermarkKey = (sub, kind) =>
-  (kind === 'comments' ? `backfill:reddit-comments:${sub.toLowerCase()}` : `backfill:reddit:${sub.toLowerCase()}`);
-const statusKey = (sub, kind) =>
-  (kind === 'comments' ? `comments:${sub.toLowerCase()}` : sub.toLowerCase());
+// Key builders live in lib/backfill-sweep.js — the single source shared with
+// the orphan sweep, so the two can never disagree about where status lives.
+const { watermarkKey, statusKey } = require('../lib/backfill-sweep');
 
 // One time-budgeted chunk of the archive walk. Returns exhausted true/false.
 async function backfillChunk(context, sub, months, kind = 'posts') {

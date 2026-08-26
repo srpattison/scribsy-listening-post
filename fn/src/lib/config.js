@@ -144,6 +144,31 @@ function boilerplateMinCharsTitle(env = process.env) {
 // Retained name for the body floor — every existing caller means "body".
 const boilerplateMinChars = boilerplateMinCharsBody;
 
+// Staleness threshold (hours) before the backfill sweep treats a
+// `queued: true, exhausted: false` walk with no observed activity as orphaned
+// and re-enqueues its wake-up message (CB-LISTEN-CORRECT-1 §4). Mechanical
+// knob; the default lives with the sweep's reasoning in lib/backfill-sweep.js.
+function backfillSweepStaleHours(env = process.env) {
+  const { BACKFILL_SWEEP_STALE_HOURS_DEFAULT } = require('./backfill-sweep');
+  const n = parseInt(env.BACKFILL_SWEEP_STALE_HOURS || String(BACKFILL_SWEEP_STALE_HOURS_DEFAULT), 10);
+  return Number.isFinite(n) && n > 0 ? n : BACKFILL_SWEEP_STALE_HOURS_DEFAULT;
+}
+
+// Ceiling on distinct body hashes the corpus audit tracks for duplicate
+// detection (CB-LISTEN-CORRECT-1 §5). The previous hard-coded 20,000 saturated
+// (hashCapHit: true), censoring repostRows into a floor. Default sized against
+// the ~190,909-real-row corpus and MEASURED accumulator behaviour, not a round
+// number: at 250,000 entries the serialized accumulator is ~49MB, the
+// merge-time clone ~1.5s, and worst-case transient heap ~1.3GB against the
+// 2048MB Flex instance (measured 2026-08-26, Node 22) — unsaturated over the
+// full corpus with headroom.
+const DEFAULT_AUDIT_MAX_TRACKED_HASHES = 250000;
+
+function auditMaxTrackedHashes(env = process.env) {
+  const n = parseInt(env.AUDIT_MAX_TRACKED_HASHES || String(DEFAULT_AUDIT_MAX_TRACKED_HASHES), 10);
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_AUDIT_MAX_TRACKED_HASHES;
+}
+
 // Daily spend guardrail. There is no defensible constant for a budget ceiling —
 // 1500 was a stale copy of a live value that had since become 12000 — so an
 // unset cap analyses NOTHING and says so. Failing closed defers jobs (they are
@@ -170,6 +195,9 @@ module.exports = {
   boilerplateMinChars,
   boilerplateMinCharsBody,
   boilerplateMinCharsTitle,
+  backfillSweepStaleHours,
+  auditMaxTrackedHashes,
+  DEFAULT_AUDIT_MAX_TRACKED_HASHES,
   dailyAnalyzeCap,
   COMMENT_POLICIES,
   DEFAULT_COMMENT_POLICY,

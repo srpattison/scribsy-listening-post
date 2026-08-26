@@ -170,16 +170,46 @@ test('§8c: two rows with genuinely unrelated bodies are neither a crosspost nor
   assert.strictEqual(dup.repostHashes, 0);
 });
 
-test('mergeChunk caps tracked hashes at MAX_TRACKED_HASHES and reports the cap explicitly, never silently', () => {
-  const hits = Array.from({ length: auditLib.MAX_TRACKED_HASHES + 50 }, (_, i) => ({
+test('mergeChunk caps tracked hashes at the configured ceiling and reports the cap explicitly, never silently', () => {
+  const cap = 200; // explicit per-call override — the same knob AUDIT_MAX_TRACKED_HASHES turns
+  const hits = Array.from({ length: cap + 50 }, (_, i) => ({
     hash: `hash${i}`, sub: 'writing', rowKey: `r${i}`, permalink: null
   }));
   const acc = auditLib.mergeChunk(null, {
     rowsScanned: hits.length, missingBlobs: 0, quoteCounts: {}, quoteSamples: {}, hashHits: hits,
     emptyRemoved: {}, bodyLength: {}, nonEnglish: {}
-  });
-  assert.strictEqual(acc.trackedHashCount, auditLib.MAX_TRACKED_HASHES);
+  }, { maxTrackedHashes: cap });
+  assert.strictEqual(acc.trackedHashCount, cap);
   assert.strictEqual(acc.hashCapHit, true, 'exceeding the cap must be reported, not silently dropped');
+});
+
+test('CORRECT-1 §5: the duplicate-hash ceiling is configurable via AUDIT_MAX_TRACKED_HASHES and raised above the saturated 20,000', () => {
+  const config = require('../src/lib/config');
+  assert.strictEqual(config.auditMaxTrackedHashes({ AUDIT_MAX_TRACKED_HASHES: '31337' }), 31337,
+    'the env knob must actually steer the ceiling');
+  assert.strictEqual(config.auditMaxTrackedHashes({}), config.DEFAULT_AUDIT_MAX_TRACKED_HASHES);
+  assert.ok(config.DEFAULT_AUDIT_MAX_TRACKED_HASHES > 20000,
+    'the default must exceed the old saturated ceiling, or repostRows stays a censored floor');
+  assert.ok(config.DEFAULT_AUDIT_MAX_TRACKED_HASHES >= 190909,
+    'sized against the ~190,909-real-row corpus so the check can run unsaturated');
+  assert.strictEqual(config.auditMaxTrackedHashes({ AUDIT_MAX_TRACKED_HASHES: 'garbage' }),
+    config.DEFAULT_AUDIT_MAX_TRACKED_HASHES, 'an unparseable value falls back to the default, never to zero');
+  assert.strictEqual(auditLib.maxTrackedHashes(), config.auditMaxTrackedHashes(),
+    'audit and config must resolve the same ceiling — one knob, no drift');
+});
+
+test('CORRECT-1 §5: a raised ceiling leaves hashCapHit reported (false) — the cap stays visible, not removed', () => {
+  const hits = Array.from({ length: 100 }, (_, i) => ({
+    hash: `hash${i}`, sub: 'writing', rowKey: `r${i}`, permalink: null
+  }));
+  const acc = auditLib.mergeChunk(null, {
+    rowsScanned: hits.length, missingBlobs: 0, quoteCounts: {}, quoteSamples: {}, hashHits: hits,
+    emptyRemoved: {}, bodyLength: {}, nonEnglish: {}
+  }, { maxTrackedHashes: 200 });
+  const dup = auditLib.duplicateSummary(acc, { maxTrackedHashes: 200 });
+  assert.strictEqual(dup.hashCapHit, false);
+  assert.strictEqual(dup.trackedHashCount, 100);
+  assert.strictEqual(dup.maxTrackedHashes, 200, 'the ceiling in force must be reported alongside the count');
 });
 
 // ---------------------------------------------------------------------------
@@ -543,7 +573,7 @@ test('r2 (3)/(c): no silent caps — every bound applied is visible in the repor
 
   assert.strictEqual(report.quoteProvenance.sampleCapPerPartition, auditLib.QUOTE_SAMPLE_CAP_PER_PARTITION,
     'the quote-sample cap must be a named field in the report, not something a reader has to infer');
-  assert.strictEqual(report.duplicates.maxTrackedHashes, auditLib.MAX_TRACKED_HASHES,
+  assert.strictEqual(report.duplicates.maxTrackedHashes, auditLib.maxTrackedHashes(),
     'the duplicate-hash cap must be a named field in the report, not something a reader has to infer');
   assert.ok('hashCapHit' in report.duplicates && 'trackedHashCount' in report.duplicates);
 });

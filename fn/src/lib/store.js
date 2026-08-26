@@ -7,6 +7,7 @@ const { TableClient } = require('@azure/data-tables');
 const { BlobServiceClient, BlobSASPermissions } = require('@azure/storage-blob');
 const { QueueClient } = require('@azure/storage-queue');
 const tablesafe = require('./tablesafe');
+const provenanceLib = require('./analysis-provenance');
 const { rowKeyFor, kindOf } = require('./rowkeys');
 
 const CONN = () => process.env.AzureWebJobsStorage;
@@ -170,8 +171,23 @@ async function getPostRow(subreddit, postId) {
 
 async function saveAnalysis(subreddit, postId, analysis, {
   embB64 = '', schemaVersion = 0, subMentionsCsv = '', kind = 'post',
-  botCommentsFiltered = 0, botCommentsFilterReasons = null
+  botCommentsFiltered = 0, botCommentsFilterReasons = null,
+  provenanceStamp = null
 } = {}) {
+  // Provenance stamps (CB-LISTEN-CORRECT-1 §2). Written only when the caller
+  // supplied a stamp taken at the model call — an absent stamp means "analysed
+  // before provenance existed" (or a call-site defect, which the worker logs)
+  // and the columns are left off entirely rather than written empty, so the
+  // pre-stamp population stays countable.
+  const stamp = provenanceStamp
+    ? {
+      analysisInputHash: String(provenanceStamp.analysisInputHash || ''),
+      analysisPromptVersion: String(provenanceStamp.analysisPromptVersion || ''),
+      analysisRegistryVersion: String(provenanceStamp.analysisRegistryVersion || ''),
+      analysisFilterVersion: String(provenanceStamp.analysisFilterVersion || ''),
+      analysisAt: String(provenanceStamp.analysisAt || '')
+    }
+    : {};
   // analysisJson gets its own property budget and is shrunk by dropping whole
   // fields, never by slicing the encoded string — a sliced JSON string parses
   // as garbage and silently drops the row from every aggregate downstream.
@@ -201,7 +217,8 @@ async function saveAnalysis(subreddit, postId, analysis, {
       topicsCsv: (analysis.topics || []).join(','),
       stanceBasisCsv: (analysis.stance_basis || []).join(','),
       intensity: analysis.stance_intensity || 0,
-      week: analysis.week || ''
+      week: analysis.week || '',
+      ...stamp
     },
     'Merge'
   );
@@ -217,15 +234,25 @@ async function listAnalyzedPosts() {
 // Drain-rate observability. `az storage queue metadata show` returns nothing on
 // this account, so the analysis backlog was unobservable from the CLI — the app
 // has to report its own counts.
+//
+// The same pass also tallies provenance-stamp coverage (CB-LISTEN-CORRECT-1
+// §6) — piggybacked here rather than run as a second full-table scan, because
+// health calls this on every hit.
 async function countPosts() {
   let total = 0, analyzed = 0, posts = 0, comments = 0;
-  const iter = postsTable().listEntities({ queryOptions: { select: ['RowKey', 'analyzed', 'kind'] } });
+  const tally = provenanceLib.createProvenanceTally();
+  const iter = postsTable().listEntities({
+    queryOptions: {
+      select: ['RowKey', 'analyzed', 'kind',
+        'analysisInputHash', 'analysisPromptVersion', 'analysisRegistryVersion', 'analysisFilterVersion']
+    }
+  });
   for await (const e of iter) {
     total++;
-    if (e.analyzed === true) analyzed++;
+    if (e.analyzed === true) { analyzed++; tally.add(e); }
     if (kindOf(e) === 'comment') comments++; else posts++;
   }
-  return { total, analyzed, unanalyzed: total - analyzed, posts, comments };
+  return { total, analyzed, unanalyzed: total - analyzed, posts, comments, provenance: tally.result() };
 }
 
 // Every row, with only the columns the bot/boilerplate detectors need. Used by

@@ -10,7 +10,9 @@ const { app } = require('@azure/functions');
 const store = require('../lib/store');
 const config = require('../lib/config');
 const boilerplateRegistry = require('../lib/boilerplate-registry');
-const { askCorpus, embedTexts, b64ToVec, cosine } = require('../lib/aoai');
+const provenance = require('../lib/analysis-provenance');
+const backfillSweep = require('../lib/backfill-sweep');
+const { askCorpus, embedTexts, b64ToVec, cosine, analysisPromptVersion } = require('../lib/aoai');
 
 const VIEWS = ['meta', 'heatmap', 'stance', 'distributions', 'features', 'minbar', 'trust', 'cohort', 'quotes', 'personas', 'brief', 'competitors', 'resonance', 'signals', 'discovery'];
 
@@ -39,9 +41,26 @@ async function filteredCommentsLast24h() {
   }
 }
 
+// The versions NEW analysis rows would be stamped with right now — shown next
+// to the distinct values observed on stored rows, so "which rows are on the
+// old prompt" is answerable by eye. Guarded: version resolution reads module
+// source from disk and must never take down health.
+function currentAnalysisVersions() {
+  try {
+    return {
+      analysisPromptVersion: analysisPromptVersion(),
+      analysisFilterVersion: provenance.filterVersion()
+      // analysisRegistryVersion is per-sub live state, resolved per row at
+      // analyze time — there is no single "current" value to show here.
+    };
+  } catch (e) {
+    return { unavailable: true, error: e.message };
+  }
+}
+
 async function health() {
   const [counts, depth, rollup, retagReport, contamination, filtered, registrySummary,
-    retagBodiesStatus, retagContaminationStatus, auditReport] = await Promise.all([
+    retagBodiesStatus, retagContaminationStatus, auditReport, backfillOrphans] = await Promise.all([
     store.countPosts().catch((e) => ({ error: e.message })),
     store.queueDepth().catch(() => null),
     store.getAggregate('rollup-health', 'latest').catch((e) => ({ error: e.message })),
@@ -55,7 +74,14 @@ async function health() {
     // chunk's window, so this is what actually shows the scan advancing.
     store.getAggregate('retag-queue-status', 'bodies').catch((e) => ({ error: e.message })),
     store.getAggregate('retag-queue-status', 'contamination').catch((e) => ({ error: e.message })),
-    store.getAggregate('audit', 'latest').catch((e) => ({ error: e.message }))
+    store.getAggregate('audit', 'latest').catch((e) => ({ error: e.message })),
+    // Backfill orphan state (CB-LISTEN-CORRECT-1 §6) — the block builder is
+    // REPO-3-guarded internally and returns { unavailable, error } on failure
+    // rather than a confidently-empty list.
+    backfillSweep.orphanHealthBlock({
+      store,
+      staleHours: config.backfillSweepStaleHours()
+    })
   ]);
   return {
     rowsTotal: counts.total ?? null,
@@ -85,6 +111,12 @@ async function health() {
       contamination: retagContaminationStatus && !retagContaminationStatus.error ? retagContaminationStatus : null
     },
     audit: auditReport && !auditReport.error ? auditReport : null,
+    // Provenance-stamp coverage (CB-LISTEN-CORRECT-1 §6): the pre-stamp
+    // population, distinct version values with counts, and the versions in
+    // force now. Built by a REPO-3-guarded block: a failed row scan reports
+    // `unavailable`, never a zero that would read as "fully stamped".
+    provenance: provenance.provenanceHealthBlock(counts, { currentVersions: currentAnalysisVersions() }),
+    backfillOrphans,
     checkedAt: new Date().toISOString()
   };
 }

@@ -22,6 +22,7 @@ const { analyzePost, embedTexts, vecToB64 } = require('./aoai');
 const { filterComments } = require('./comment-filter');
 const registry = require('./boilerplate-registry');
 const dailyCap = require('./daily-cap');
+const provenance = require('./analysis-provenance');
 const { SCHEMA_VERSION, mentionsAi } = require('./taxonomy');
 
 // Registry lookups are cached across queue messages: the registry is small,
@@ -126,6 +127,26 @@ async function processAnalyzeJob(job, context, { storeImpl = store, chat, regist
 
   const analysis = await analyzePost(raw.post, promptComments, chat ? { chat } : undefined);
 
+  // Provenance stamps (CB-LISTEN-CORRECT-1 §2). Input hash, prompt version and
+  // timestamp were taken at the model call site inside analyzePost; the
+  // registry version hashes the exact per-sub Set that filtered this row's
+  // prompt, and the filter version hashes the classifier rule-set in force.
+  // All derivations live in lib/analysis-provenance.js. If the call-site stamp
+  // is ever absent that is a defect worth hearing about, and the row is left
+  // UNSTAMPED rather than stamped with guesses.
+  const callSiteStamp = analysis._provenance || null;
+  delete analysis._provenance; // never let the stamp leak into analysisJson
+  let stamp = null;
+  if (callSiteStamp) {
+    stamp = {
+      ...callSiteStamp,
+      analysisRegistryVersion: provenance.registryVersionOf(boilerplateHashes),
+      analysisFilterVersion: provenance.filterVersion()
+    };
+  } else {
+    context.warn(`analysis for ${subreddit}/${id} carried no call-site provenance — row will be unstamped`);
+  }
+
   // Subreddit-mention extraction (regex, zero LLM cost) — feeds the discovery
   // view. Comments have this extracted at ingest, because their analysis is
   // gated and may never run. Filtered comments are excluded here too: a bot
@@ -155,7 +176,8 @@ async function processAnalyzeJob(job, context, { storeImpl = store, chat, regist
     // Per-row provenance for the filter: how many comments were withheld from
     // this row's prompt, and which detector fired (§3c).
     botCommentsFiltered: filteredCount,
-    botCommentsFilterReasons: filterReasons
+    botCommentsFilterReasons: filterReasons,
+    provenanceStamp: stamp
   });
   if (kind === 'comment') {
     await dailyCap.bumpCommentCounter(storeImpl.aggregateBackend('comment-gate', todayKey()), 'analyzed', { context })

@@ -10,6 +10,7 @@
 // AOAI_DEPLOYMENT (default 'chat').
 
 const { TOPICS, STANCES, EXPERIENCE, STANCE_BASIS, DEALBREAKER_KINDS } = require('./taxonomy');
+const provenance = require('./analysis-provenance');
 
 function cfg() {
   const endpoint = process.env.AOAI_ENDPOINT;
@@ -176,6 +177,21 @@ Rules:
 - notable_quote: the single most vivid verbatim sentence capturing the emotional core; empty string if none.
 - summary: two sentences, neutral register.`;
 
+// Version of the analysis prompt in force: derived from the live system
+// prompt, the live response schema, and the source of analyzePost itself (so a
+// user-prompt template change bumps it too). Derivation rule lives in
+// lib/analysis-provenance.js; computed lazily once per process — all three
+// inputs are fixed at module load, so there is nothing to go stale.
+let promptVersionMemo = null;
+function analysisPromptVersion() {
+  if (!promptVersionMemo) {
+    promptVersionMemo = provenance.promptVersionFrom({
+      system: ANALYSIS_SYSTEM, schema: ANALYSIS_SCHEMA, assembly: analyzePost
+    });
+  }
+  return promptVersionMemo;
+}
+
 // `deps.chat` exists so tests can assert the CONSTRUCTED PROMPT directly rather
 // than inferring filtering from the model's output — asserting only that quotes
 // came out clean cannot distinguish filtering from the model happening not to
@@ -200,12 +216,22 @@ ${(post.selftext || '(link/image post — no body)').slice(0, 6000)}
 
 TOP COMMENTS:
 ${commentBlock || '(none)'}`;
+  // Provenance, taken HERE — at the model call, from the very strings passed to
+  // `chat` — never re-derived later from stored fields (CB-LISTEN-CORRECT-1 §2).
+  const _provenance = {
+    analysisInputHash: provenance.hashAnalysisInput(ANALYSIS_SYSTEM, user),
+    analysisPromptVersion: analysisPromptVersion(),
+    analysisAt: new Date().toISOString()
+  };
   const result = await chat(ANALYSIS_SYSTEM, user, 'post_analysis', ANALYSIS_SCHEMA, 4000);
   const d = new Date(post.created_utc * 1000);
   // ISO week key, e.g. 2026-W33
   const jan1 = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
   const week = Math.ceil(((d - jan1) / 86400000 + jan1.getUTCDay() + 1) / 7);
   result.week = `${d.getUTCFullYear()}-W${String(week).padStart(2, '0')}`;
+  // Carried on the result so the worker can stamp the row; stripped by
+  // analyze-worker before the analysis object is packed into analysisJson.
+  result._provenance = _provenance;
   return result;
 }
 
@@ -395,5 +421,6 @@ function cosine(a, b) {
 
 module.exports = {
   analyzePost, synthesizePersonas, normalizeFeatures, strategyBrief, askCorpus,
-  standingQuestions, embedTexts, vecToB64, b64ToVec, cosine, EMBED_DIMS
+  standingQuestions, embedTexts, vecToB64, b64ToVec, cosine, EMBED_DIMS,
+  analysisPromptVersion, ANALYSIS_SYSTEM, ANALYSIS_SCHEMA
 };

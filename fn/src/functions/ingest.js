@@ -13,6 +13,7 @@ const bsky = require('../lib/sources/bluesky');
 const redditOauth = require('../lib/reddit');
 const store = require('../lib/store');
 const config = require('../lib/config');
+const backfillSweep = require('../lib/backfill-sweep');
 
 const OVERLAP_SECONDS = 3 * 24 * 3600; // re-scan window for Arctic late arrivals
 
@@ -148,8 +149,25 @@ async function runIngest(context, { pagesPerSub = 2 } = {}) {
   try { await ingestBluesky(context, counters); }
   catch (e) { context.error(`bluesky frame failed: ${e.message}`); counters.blueskyFrameError = e.message; }
 
+  // Self-healing backfill sweep (CB-LISTEN-CORRECT-1 §4): re-enqueue the
+  // wake-up for any walk stuck at `queued: true, exhausted: false` with no
+  // activity past the staleness threshold. Runs AFTER the frames so a status
+  // row the new-sub seeder just created reads as fresh, not stale. Isolated
+  // like the frames: a sweep failure must not fail the ingest, but it must be
+  // visible, not silent.
+  try {
+    counters.backfillSweep = await backfillSweep.sweepOrphanedBackfills({
+      store, context,
+      subs: subreddits(),
+      staleHours: config.backfillSweepStaleHours()
+    });
+  } catch (e) {
+    context.error(`backfill sweep failed: ${e.message}`);
+    counters.backfillSweepError = e.message;
+  }
+
   counters.durationMs = Date.now() - startedMs;
-  counters.ok = counters.subsFailed.length === 0 && !counters.redditFrameError && !counters.blueskyFrameError;
+  counters.ok = counters.subsFailed.length === 0 && !counters.redditFrameError && !counters.blueskyFrameError && !counters.backfillSweepError;
   context.log(
     `ingest done: ${counters.discovered} seen, ${counters.enqueued} new enqueued, ` +
     `${counters.subsWatermarked.length}/${counters.subsAttempted} subs watermarked, ` +

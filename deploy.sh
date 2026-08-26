@@ -80,6 +80,13 @@ DEFAULT_BOILERPLATE_MIN_CHARS_BODY='120'
 # Both floors are settings. A documented two-floor design with only one of them
 # configurable is how a tuned threshold silently becomes an untuned one.
 DEFAULT_BOILERPLATE_MIN_CHARS_TITLE='40'
+# CB-LISTEN-CORRECT-1: hours of silence before the daily backfill sweep treats
+# a queued, unexhausted walk as orphaned and re-enqueues its wake-up message.
+DEFAULT_BACKFILL_SWEEP_STALE_HOURS='24'
+# CB-LISTEN-CORRECT-1: audit duplicate-hash ceiling. The old hard-coded 20000
+# saturated and censored repostRows into a floor; 250000 is sized against the
+# ~190k-real-row corpus and measured accumulator memory (see lib/config.js).
+DEFAULT_AUDIT_MAX_TRACKED_HASHES='250000'
 
 # Optional — only used if REDDIT_MODE=oauth after an approved registration.
 # Deliberately NOT defaulted here: `resolve` below must be able to tell "the
@@ -219,6 +226,8 @@ resolve "BOILERPLATE_MIN_REPEATS" "${BOILERPLATE_MIN_REPEATS:-}" "$DEFAULT_BOILE
 resolve "BOILERPLATE_MIN_CHARS_BODY"  "${BOILERPLATE_MIN_CHARS_BODY:-}"  "$DEFAULT_BOILERPLATE_MIN_CHARS_BODY"
 resolve "BOILERPLATE_MIN_CHARS_TITLE" "${BOILERPLATE_MIN_CHARS_TITLE:-}" "$DEFAULT_BOILERPLATE_MIN_CHARS_TITLE"
 resolve "MIN_COMMENTS_FOR_FETCH" "${MIN_COMMENTS_FOR_FETCH:-}" "3"
+resolve "BACKFILL_SWEEP_STALE_HOURS" "${BACKFILL_SWEEP_STALE_HOURS:-}" "$DEFAULT_BACKFILL_SWEEP_STALE_HOURS"
+resolve "AUDIT_MAX_TRACKED_HASHES"   "${AUDIT_MAX_TRACKED_HASHES:-}"   "$DEFAULT_AUDIT_MAX_TRACKED_HASHES"
 resolve "REDDIT_MODE"            "${REDDIT_MODE:-}"            "arctic"
 resolve "REDDIT_CLIENT_ID"       "${REDDIT_CLIENT_ID:-}"       ""
 resolve "REDDIT_CLIENT_SECRET"   "${REDDIT_CLIENT_SECRET:-}"   ""
