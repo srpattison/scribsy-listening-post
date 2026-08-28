@@ -30,7 +30,7 @@ jobs:
           show_full_output: true
           prompt: |
             Execute the brief in BRIEF.md exactly. Hard rules: obey this repo's CLAUDE.md; work on branch feat/<brief-id> and open a PR — never push main — unless BRIEF.md explicitly authorizes main; run every acceptance check in BRIEF.md before claiming done; write REPORT.md (SHAs, checks run + results, counts, deviations, STOP conditions) as the last act, always, even on failure; if any acceptance check fails, scope is exceeded, or BRIEF.md is missing/malformed → STOP, write REPORT.md explaining why, exit nonzero. Run shell commands ONE per Bash call — never chain commands with && or ; — and in particular run git push and gh pr create as two separate Bash calls.
-          claude_args: "--max-turns 300${{ github.event.client_payload.model && format(' --model {0}', github.event.client_payload.model) || '' }} --allowedTools Bash(git:*),Bash(gh:*),Bash(npm:*),Bash(node:*),Bash(npx:*),Bash(jq:*),Read,Write,Edit,Glob,Grep,TodoWrite,Bash(mkdir:*),Bash(ls:*),Bash(cat:*),Bash(mv:*),Bash(cp:*),Bash(sed:*),Bash(find:*),Bash(wc:*),Bash(diff:*),Bash(head:*),Bash(tail:*)"
+          claude_args: "--max-turns 300${{ github.event.client_payload.model && format(' --model {0}', github.event.client_payload.model) || '' }} --allowedTools Bash(git:*),Bash(gh:*),Bash(npm:*),Bash(node:*),Bash(npx:*),Bash(jq:*),Read,Write,Edit,Glob,Grep,TodoWrite,Bash(mkdir:*),Bash(ls:*),Bash(cat:*),Bash(mv:*),Bash(cp:*),Bash(sed:*),Bash(find:*),Bash(wc:*),Bash(diff:*),Bash(head:*),Bash(tail:*),Bash(bun:*),Bash(bunx:*),Bash(docker:*),Bash(psql:*),Bash(curl:*),Bash(deno:*),Bash(supabase:*)"
 
       - name: upload report
         if: always()
