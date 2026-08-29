@@ -3,7 +3,7 @@
 // CB-LISTEN-CORRECT-1 §2 — provenance stamps on every analysed row.
 //
 // The acceptance bar these tests hold (§7.1–7.3):
-//   1. every new analysis carries all five stamp fields, versions resolved
+//   1. every new analysis carries all six stamp fields, versions resolved
 //      from one module (lib/analysis-provenance.js);
 //   2. analysisInputHash CHANGES when the assembled input changes and is
 //      STABLE when it does not — a hash that does not discriminate is worse
@@ -306,9 +306,9 @@ test('§7.3: before any new analysis runs, every analysed row is unstamped — u
 
 test('stamped rows tally into distinct version values with counts — the query surface for scoped re-analysis', () => {
   const tally = provenance.createProvenanceTally();
-  tally.add({ analysisInputHash: 'x1', analysisPromptVersion: 'pA', analysisRegistryVersion: 'rA', analysisFilterVersion: 'fA' });
-  tally.add({ analysisInputHash: 'x2', analysisPromptVersion: 'pA', analysisRegistryVersion: 'rB', analysisFilterVersion: 'fA' });
-  tally.add({ analysisInputHash: 'x3', analysisPromptVersion: 'pB', analysisRegistryVersion: 'rB', analysisFilterVersion: 'fA' });
+  tally.add({ analysisInputHash: 'x1', analysisPromptVersion: 'pA', analysisRegistryVersion: 'rA', analysisFilterVersion: 'fA', analysisModel: 'chat' });
+  tally.add({ analysisInputHash: 'x2', analysisPromptVersion: 'pA', analysisRegistryVersion: 'rB', analysisFilterVersion: 'fA', analysisModel: 'chat' });
+  tally.add({ analysisInputHash: 'x3', analysisPromptVersion: 'pB', analysisRegistryVersion: 'rB', analysisFilterVersion: 'fA', analysisModel: 'chat-v2' });
   tally.add({ analyzed: true }); // one pre-stamp row mixed in
   const out = tally.result();
   assert.strictEqual(out.stampedAnalyzedRows, 3);
@@ -316,18 +316,34 @@ test('stamped rows tally into distinct version values with counts — the query 
   assert.deepStrictEqual(out.promptVersions, { pA: 2, pB: 1 });
   assert.deepStrictEqual(out.registryVersions, { rA: 1, rB: 2 });
   assert.deepStrictEqual(out.filterVersions, { fA: 3 });
+  assert.deepStrictEqual(out.modelVersions, { chat: 2, 'chat-v2': 1 },
+    'modelVersions must be readable off result() — this is the health surface "re-analyse the rows produced by the old model" needs');
 });
 
 test('the distinct-value cap is reported when hit, never silent — a per-row "version" is a defect this makes visible', () => {
   const tally = provenance.createProvenanceTally({ distinctCap: 3 });
   for (let i = 0; i < 10; i++) {
-    tally.add({ analysisInputHash: `x${i}`, analysisPromptVersion: `p${i}`, analysisRegistryVersion: 'r', analysisFilterVersion: 'f' });
+    tally.add({ analysisInputHash: `x${i}`, analysisPromptVersion: `p${i}`, analysisRegistryVersion: 'r', analysisFilterVersion: 'f', analysisModel: 'chat' });
   }
   const out = tally.result();
   assert.strictEqual(Object.keys(out.promptVersions).length, 3);
   assert.ok(out.distinctValueOverflow, 'overflow must be reported explicitly');
   assert.strictEqual(out.distinctValueOverflow.promptVersions, 7);
   assert.strictEqual(out.distinctValueOverflow.registryVersions, 0);
+});
+
+test('a model-only overflow is reported — an AOAI_DEPLOYMENT value cannot silently blow past the cap unreported', () => {
+  const tally = provenance.createProvenanceTally({ distinctCap: 3 });
+  for (let i = 0; i < 10; i++) {
+    tally.add({ analysisInputHash: `x${i}`, analysisPromptVersion: 'p', analysisRegistryVersion: 'r', analysisFilterVersion: 'f', analysisModel: `model-${i}` });
+  }
+  const out = tally.result();
+  assert.strictEqual(Object.keys(out.modelVersions).length, 3);
+  assert.ok(out.distinctValueOverflow, 'a model-only overflow must still surface distinctValueOverflow');
+  assert.strictEqual(out.distinctValueOverflow.modelVersions, 7);
+  assert.strictEqual(out.distinctValueOverflow.promptVersions, 0);
+  assert.strictEqual(out.distinctValueOverflow.registryVersions, 0);
+  assert.strictEqual(out.distinctValueOverflow.filterVersions, 0);
 });
 
 test('REPO-3: a failed row scan surfaces as UNAVAILABLE in the health block, never as the zero that means "fully stamped"', () => {
