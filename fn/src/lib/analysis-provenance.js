@@ -172,9 +172,10 @@ function createProvenanceTally({ distinctCap = DISTINCT_VERSION_CAP } = {}) {
         promptVersions: Object.fromEntries(fields.promptVersions),
         registryVersions: Object.fromEntries(fields.registryVersions),
         filterVersions: Object.fromEntries(fields.filterVersions),
+        modelVersions: Object.fromEntries(fields.modelVersions),
         distinctValueCap: distinctCap
       };
-      if (overflow.promptVersions || overflow.registryVersions || overflow.filterVersions) {
+      if (overflow.promptVersions || overflow.registryVersions || overflow.filterVersions || overflow.modelVersions) {
         // Rows whose value could not be tracked once the cap was reached —
         // a non-zero here is itself a finding (a per-row "version").
         out.distinctValueOverflow = overflow;

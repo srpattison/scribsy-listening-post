@@ -211,6 +211,13 @@ put "EMBED_DEPLOYMENT" "embed"
 put "REDDIT_USER_AGENT" "azure:scribsy-listening-post:1.0 (research contact steven@scribsy.ai)"
 put "ARCTIC_BASE" "https://arctic-shift.photon-reddit.com"
 put "BSKY_SERVICE" "https://bsky.social"
+# CB-LISTEN-CORRECT-2: stamp the deployed commit so "landed" (this SHA is in
+# the repo) and "live" (this SHA answered a request) are two observable facts
+# instead of one inferred from key presence. A dirty tree must never report a
+# clean SHA — a marker that can lie is worse than none.
+DEPLOYED_GIT_SHA="$(git rev-parse HEAD)"
+[ -z "$(git status --porcelain)" ] || DEPLOYED_GIT_SHA="${DEPLOYED_GIT_SHA}-dirty"
+put "DEPLOYED_GIT_SHA" "$DEPLOYED_GIT_SHA"
 
 # Operator-owned — preserved when the environment is silent.
 resolve "SUBREDDITS"             "${SUBREDDITS:-}"             "$DEFAULT_SUBREDDITS_VALUE"

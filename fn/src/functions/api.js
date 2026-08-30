@@ -241,5 +241,12 @@ app.http('export', {
 app.http('ping', {
   methods: ['GET'],
   authLevel: 'anonymous',
-  handler: async () => ({ jsonBody: { ok: true, service: 'scribsy-listening-post', at: new Date().toISOString() } })
+  handler: async () => ({
+    jsonBody: {
+      ok: true,
+      service: 'scribsy-listening-post',
+      at: new Date().toISOString(),
+      deployedSha: process.env.DEPLOYED_GIT_SHA || null
+    }
+  })
 });
