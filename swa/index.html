@@ -396,7 +396,7 @@ function section(key, sels, value, fn) {
   return null;
 }
 
-function renderHealthBar(data, problems) {
+function renderHealthBar(data, problems, trackedTotal) {
   const h = data.health || {};
   const failed = (h.lastRollupSectionsFailed || []).map((f) => f.name);
   const names = [...new Set([...problems.map((p) => p.key), ...failed])];
@@ -407,7 +407,7 @@ function renderHealthBar(data, problems) {
   const when = h.lastRollupAt ? ` Last rollup ${new Date(h.lastRollupAt).toLocaleString()}.` : '';
   $('#healthbar').innerHTML = `
     <div class="healthbar">
-      <strong>${names.length} of 15 sections unavailable</strong>
+      <strong>${names.length} of ${trackedTotal} sections unavailable</strong>
       <p class="sub">${names.map((n) => esc(n)).join(', ')} — shown below as failures, not as empty results.${when}${backlog}</p>
     </div>`;
 }
@@ -416,7 +416,8 @@ function renderHealthBar(data, problems) {
 function render(data) {
   const meta = data.meta || {};
   const problems = [];
-  const track = (r) => { if (r) problems.push(r); };
+  let trackedTotal = 0;
+  const track = (r) => { trackedTotal++; if (r) problems.push(r); };
 
   renderTiles(meta, data);
   track(section('brief', ['#brief'], data.brief, renderBrief));
@@ -444,7 +445,7 @@ function render(data) {
     renderQuotes(q.quotes || [], (data.heatmap && data.heatmap.topics) || []);
   }));
 
-  renderHealthBar(data, problems);
+  renderHealthBar(data, problems, trackedTotal);
   $('#updated').textContent = meta.updatedAt ? `updated ${new Date(meta.updatedAt).toLocaleString()}` : '';
 }
 

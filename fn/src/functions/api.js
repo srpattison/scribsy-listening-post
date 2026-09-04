@@ -14,7 +14,7 @@ const provenance = require('../lib/analysis-provenance');
 const backfillSweep = require('../lib/backfill-sweep');
 const { askCorpus, embedTexts, b64ToVec, cosine, analysisPromptVersion, deploymentInForce } = require('../lib/aoai');
 
-const VIEWS = ['meta', 'heatmap', 'stance', 'distributions', 'features', 'minbar', 'trust', 'cohort', 'quotes', 'personas', 'brief', 'competitors', 'resonance', 'signals', 'discovery'];
+const VIEWS = ['meta', 'heatmap', 'stance', 'distributions', 'features', 'minbar', 'trust', 'cohort', 'quotes', 'personas', 'brief', 'competitors', 'resonance', 'signals', 'discovery', 'rules'];
 
 // Self-reported drain rate + last-rollup outcome. The CLI cannot read this
 // account's queue depth (`az storage queue metadata show` returns nothing), so
