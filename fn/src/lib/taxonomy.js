@@ -75,4 +75,15 @@ const PILLAR_SIGNALS = {
   safeAI: /safe(ly)? (try|experiment|use)|without (the )?guilt|boundar|dial|control (over|of) (the )?ai/i
 };
 
-module.exports = { TOPICS, STANCES, EXPERIENCE, STANCE_BASIS, DEALBREAKER_KINDS, SCHEMA_VERSION, PILLAR_SIGNALS, AI_PREFILTER, mentionsAi };
+// Competitor-watch tool name canonicalisation (CB-LISTEN-BOARDS-1 §4.3).
+// tools_mentioned[].tool is free text from the LLM with no normalisation pass
+// of its own (unlike feature_requests). Normalisation order in the competitors
+// builder: trim -> casefold -> strip a trailing parenthetical -> this lookup
+// -> fall back to the trimmed original. Keys here are already trim+casefold+
+// parenthetical-stripped.
+const COMPETITOR_ALIASES = {
+  'ao3': 'AO3',
+  'archive of our own': 'AO3'
+};
+
+module.exports = { TOPICS, STANCES, EXPERIENCE, STANCE_BASIS, DEALBREAKER_KINDS, SCHEMA_VERSION, PILLAR_SIGNALS, AI_PREFILTER, mentionsAi, COMPETITOR_ALIASES };

@@ -17,11 +17,12 @@
 // that section's own row, and the run continues. A section that depends on an
 // earlier one reads it from `results` and must tolerate it being missing.
 
-const { TOPICS, PILLAR_SIGNALS } = require('./taxonomy');
+const { TOPICS, PILLAR_SIGNALS, COMPETITOR_ALIASES } = require('./taxonomy');
 const config = require('./config');
 const commentPolicy = require('./comment-policy');
 const contentClass = require('./content-class');
 const boilerplateRegistry = require('./boilerplate-registry');
+const boilerplateFilter = require('./boilerplate-filter');
 
 // ---------------------------------------------------------------------------
 // Salience — corpus-derived, never engagement-derived (§3c)
@@ -307,7 +308,7 @@ function computeCohort(frameRows, tally) {
 function buildSections({
   rows, aiRows, humanRows, humanAiRows, nonHumanRows,
   weeks, env, aoai, store, context, now = () => new Date(),
-  commentMentions = [], commentStats = null
+  commentMentions = [], commentStats = null, excluder
 }) {
   const salience = buildRecurrenceIndex(humanRows);
   return [
@@ -341,13 +342,15 @@ function buildSections({
       build: (_r, tally) => {
         const heat = {};
         for (const t of TOPICS) heat[t.slug] = {};
+        // De-duplicated per row (§4.4a): a row that lists the same topic slug
+        // twice must contribute once, not twice, to either count below.
         forEachRow(humanAiRows, (r) => {
-          for (const t of r.topics) if (heat[t]) count(heat[t], r.week);
+          for (const t of new Set(r.topics)) if (heat[t]) count(heat[t], r.week);
         }, tally);
         const heatBySub = {};
         forEachRow(humanAiRows, (r) => {
           heatBySub[r.subreddit] = heatBySub[r.subreddit] || {};
-          for (const t of r.topics) count(heatBySub[r.subreddit], t);
+          for (const t of new Set(r.topics)) count(heatBySub[r.subreddit], t);
         }, tally);
         return { weeks, topics: TOPICS, heat, heatBySub };
       }
@@ -369,14 +372,21 @@ function buildSections({
       build: (_r, tally) => {
         const stances = {}, experience = {}, topicTotals = {}, toolCounts = {}, painCounts = {};
         const stancesBySource = {};
+        const excluded = boilerplateFilter.newExcludedTally();
         forEachRow(humanAiRows, (r) => {
           stancesBySource[r.source] = stancesBySource[r.source] || {};
           count(stancesBySource[r.source], r.stance);
           count(stances, r.stance);
           count(experience, r.experience);
-          for (const t of r.topics) count(topicTotals, t);
+          // De-duplicated per row (§4.4c bounded audit: unscoped, feeds the
+          // Strategic Answers topTopics evidence — a user-facing count).
+          for (const t of new Set(r.topics)) count(topicTotals, t);
           for (const t of r.tools) count(toolCounts, String(t.tool || '').trim());
-          for (const p of r.painPoints) count(painCounts, String(p || '').toLowerCase().trim());
+          for (const p of r.painPoints) {
+            const reason = excluder.excludeItem(r, p);
+            if (reason) { boilerplateFilter.markExcluded(excluded, reason); continue; }
+            count(painCounts, String(p || '').toLowerCase().trim());
+          }
         }, tally);
         // Long tails are capped here rather than at write time: an unbounded map
         // over every distinct pain string is what pushed this row past the
@@ -389,7 +399,8 @@ function buildSections({
           toolCounts: topNObj(toolCounts, 400),
           painCounts: topNObj(painCounts, 400),
           toolCountsTotal: Object.keys(toolCounts).length,
-          painCountsTotal: Object.keys(painCounts).length
+          painCountsTotal: Object.keys(painCounts).length,
+          excluded
         };
       }
     },
@@ -402,7 +413,11 @@ function buildSections({
             rawFeatures.push({ name: f.feature, aiRelated: !!f.ai_related, quote: f.quote, permalink: r.permalink, subreddit: r.subreddit });
           }
         }, tally);
-        if (!rawFeatures.length) return { featureBoard: [] };
+        if (!rawFeatures.length) return { featureBoard: [], clusteredNames: 0, totalNames: 0 };
+        const totalNames = rawFeatures.length;
+        // The cap stays (§4.2: do not raise it blind), but truncation is now
+        // recorded rather than silent.
+        const clusteredNames = Math.min(400, totalNames);
         try {
           const { groups } = await aoai.normalizeFeatures(rawFeatures.map((f) => f.name).slice(0, 400));
           const featureBoard = groups
@@ -418,15 +433,32 @@ function buildSections({
             })
             .sort((a, b) => b.count - a.count)
             .slice(0, 40);
-          return { featureBoard };
+          return { featureBoard, clusteredNames, totalNames };
         } catch (e) {
-          // Degrade to raw counts rather than failing the section outright.
+          // Degrade to raw counts rather than failing the section outright, but
+          // preserve aiRelated by the same majority rule used in the primary
+          // path (§4.2 / C3) — the prior fallback dropped it entirely, which
+          // read as an AI bucket empty corpus-wide even though every row's
+          // ai_related flag was correct.
           context?.error?.(`feature normalization failed: ${e.message}`);
-          const featureBoard = Object.entries(
-            rawFeatures.reduce((m, f) => (count(m, String(f.name || '').toLowerCase()), m), {})
-          ).map(([feature, n]) => ({ feature, count: n, examples: [] }))
+          const groupsByName = {};
+          for (const f of rawFeatures) {
+            const key = String(f.name || '').toLowerCase().trim();
+            if (!key) continue;
+            (groupsByName[key] = groupsByName[key] || []).push(f);
+          }
+          const featureBoard = Object.entries(groupsByName)
+            .map(([feature, members]) => {
+              const aiVotes = members.filter((m) => m.aiRelated).length;
+              return {
+                feature,
+                count: members.length,
+                aiRelated: aiVotes * 2 >= members.length && members.length > 0,
+                examples: members.slice(0, 3)
+              };
+            })
             .sort((a, b) => b.count - a.count).slice(0, 25);
-          return { featureBoard, degraded: true, degradedReason: e.message };
+          return { featureBoard, degraded: true, degradedReason: e.message, clusteredNames, totalNames };
         }
       }
     },
@@ -434,9 +466,16 @@ function buildSections({
       name: 'minbar',
       build: (_r, tally) => {
         const baselineCounts = {}, dbByKind = {}, dbItems = {};
+        const excluded = boilerplateFilter.newExcludedTally();
         forEachRow(humanRows, (r) => {
-          for (const b of r.expectedBaseline) count(baselineCounts, String(b || '').toLowerCase().trim());
+          for (const b of r.expectedBaseline) {
+            const reason = excluder.excludeItem(r, b);
+            if (reason) { boilerplateFilter.markExcluded(excluded, reason); continue; }
+            count(baselineCounts, String(b || '').toLowerCase().trim());
+          }
           for (const d of r.dealBreakers) {
+            const reason = excluder.excludeItem(r, d.quote || d.item);
+            if (reason) { boilerplateFilter.markExcluded(excluded, reason); continue; }
             count(dbByKind, d.kind);
             const k = String(d.item || '').toLowerCase().trim();
             dbItems[k] = dbItems[k] || { item: d.item, kind: d.kind, count: 0, examples: [] };
@@ -447,7 +486,8 @@ function buildSections({
         return {
           baselineCounts: topNObj(baselineCounts, 400),
           dealBreakerBoard: Object.values(dbItems).sort((a, b) => b.count - a.count).slice(0, 30),
-          dbByKind
+          dbByKind,
+          excluded
         };
       }
     },
@@ -456,9 +496,12 @@ function buildSections({
       build: (_r, tally) => {
         const trust = { builds: {}, breaks: {} };
         const trustExamples = { builds: {}, breaks: {} };
+        const excluded = boilerplateFilter.newExcludedTally();
         forEachRow(humanRows, (r) => {
           for (const t of r.trustSignals) {
             if (!trust[t.direction]) continue; // unknown direction — skip, don't throw
+            const reason = excluder.excludeItem(r, t.quote || t.signal);
+            if (reason) { boilerplateFilter.markExcluded(excluded, reason); continue; }
             const k = String(t.signal || '').toLowerCase().trim();
             count(trust[t.direction], k);
             trustExamples[t.direction][k] = trustExamples[t.direction][k] || [];
@@ -469,7 +512,8 @@ function buildSections({
           builds: Object.entries(trust.builds).sort((a, b) => b[1] - a[1]).slice(0, 20)
             .map(([signal, n]) => ({ signal, count: n, examples: trustExamples.builds[signal] || [] })),
           breaks: Object.entries(trust.breaks).sort((a, b) => b[1] - a[1]).slice(0, 20)
-            .map(([signal, n]) => ({ signal, count: n, examples: trustExamples.breaks[signal] || [] }))
+            .map(([signal, n]) => ({ signal, count: n, examples: trustExamples.breaks[signal] || [] })),
+          excluded
         };
       }
     },
@@ -562,10 +606,17 @@ function buildSections({
         const switchingMoments = [];
         forEachRow(humanRows, (r) => {
           for (const t of r.tools) {
-            const k = String(t.tool || '').trim();
-            if (!k) continue;
-            toolBoard[k] = toolBoard[k] || { tool: k, mentions: 0, positive: 0, negative: 0, mixed: 0, neutral: 0, switching: 0 };
+            const raw = String(t.tool || '').trim();
+            if (!raw) continue;
+            // Normalisation order (§4.3): trim -> casefold -> strip a trailing
+            // parenthetical -> alias-map lookup -> fall back to the trimmed
+            // original. Never drop an unmapped name.
+            const stripped = raw.toLowerCase().replace(/\s*\([^)]*\)\s*$/, '').trim();
+            const k = COMPETITOR_ALIASES[stripped] || raw;
+            toolBoard[k] = toolBoard[k] ||
+              { tool: k, mentions: 0, positive: 0, negative: 0, mixed: 0, neutral: 0, switching: 0, variants: [] };
             toolBoard[k].mentions++;
+            if (!toolBoard[k].variants.includes(raw)) toolBoard[k].variants.push(raw);
             count(toolBoard[k], t.sentiment in toolBoard[k] ? t.sentiment : 'neutral');
             if (t.switching) {
               toolBoard[k].switching++;
@@ -701,6 +752,11 @@ function buildSections({
       build: async (results) => {
         const dist = results.distributions || {};
         const minbar = results.minbar || {};
+        // The evidence pack below is drawn from minbar/trust/distributions,
+        // which are already item-filtered (§4.1) by the time they land in
+        // `results` — this combines their tallies so the evidence pack's own
+        // exclusion total is auditable rather than implicit.
+        const excluded = boilerplateFilter.combineExcluded([minbar.excluded, results.trust && results.trust.excluded, dist.excluded]);
         try {
           const brief = await aoai.strategyBrief({
             cohort: results.cohort || {},
@@ -722,12 +778,13 @@ function buildSections({
           });
           brief.questions = aoai.standingQuestions();
           brief.generatedAt = now().toISOString();
+          brief.excluded = excluded;
           return brief;
         } catch (e) {
           context?.error?.(`strategy brief failed: ${e.message}`);
           const prev = await store.getAggregate('brief', 'latest');
-          if (prev && !prev.error) return { ...prev, _stale: true, _staleReason: e.message };
-          return { answers: [], questions: aoai.standingQuestions(), _stale: true, _staleReason: e.message };
+          if (prev && !prev.error) return { ...prev, _stale: true, _staleReason: e.message, excluded };
+          return { answers: [], questions: aoai.standingQuestions(), _stale: true, _staleReason: e.message, excluded };
         }
       }
     },
@@ -813,9 +870,21 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
     }
   }
 
+  // Item-level registry exclusion (§4.1). Preloaded once, per subreddit
+  // actually present, so the (synchronous) board builders below can check
+  // membership without making the whole section list async.
+  let excluder;
+  try {
+    const registry = await boilerplateFilter.loadRegistryForSubs(store, rows.map((r) => r.subreddit));
+    excluder = boilerplateFilter.makeExcluder(registry);
+  } catch (e) {
+    context?.warn?.(`boilerplate registry load failed (non-fatal, item filter disabled this run): ${e.message}`);
+    excluder = boilerplateFilter.makeExcluder(new Map());
+  }
+
   const sections = buildSections({
     rows, aiRows, humanRows, humanAiRows, nonHumanRows,
-    weeks, env, aoai, store, context, now, commentMentions, commentStats
+    weeks, env, aoai, store, context, now, commentMentions, commentStats, excluder
   });
   const { results, written, failed, rowIssues } = await runSections(sections, {
     saveAggregate: (p, k, v) => store.saveAggregate(p, k, v),
@@ -835,6 +904,27 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
     // §10.3 requires it before any further comment walk is queued.
     commentCorpus: commentStats,
     rowIssues,
+    // §4.2: a degraded feature split must be visible from rollup-health, not
+    // only inside the `features` section payload — a section that has quietly
+    // degraded for weeks is the actual failure mode this guards against.
+    featuresHealth: {
+      degraded: !!(results.features && results.features.degraded),
+      degradedReason: (results.features && results.features.degradedReason) || null,
+      clusteredNames: (results.features && results.features.clusteredNames) ?? null,
+      totalNames: (results.features && results.features.totalNames) ?? null
+    },
+    // §4.1: per-section item-exclusion totals, echoed here so the next reader
+    // can see the filter ran without opening every section payload.
+    boilerplateExcluded: {
+      minbar: (results.minbar && results.minbar.excluded) || null,
+      trust: (results.trust && results.trust.excluded) || null,
+      distributions: (results.distributions && results.distributions.excluded) || null,
+      total: boilerplateFilter.combineExcluded([
+        results.minbar && results.minbar.excluded,
+        results.trust && results.trust.excluded,
+        results.distributions && results.distributions.excluded
+      ])
+    },
     durationMs: Date.now() - startedMs,
     finishedAt: now().toISOString()
   };
