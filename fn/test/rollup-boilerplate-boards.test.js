@@ -142,8 +142,15 @@ test('registry-recorded item text is excluded from every affected board; a genui
     'a genuine unregistered deal-breaker must not be swept up by the filter');
 });
 
-test('with no registry seeded, the same corpus leaks the rule text (proves the check can fail)', async () => {
-  const rows = Array.from({ length: 12 }, (_, i) => contaminatedRow(i));
+test('with no registry seeded, the same corpus leaks the rule text (proves the registry rung specifically can fail)', async () => {
+  // CB-LISTEN-BOARDS-2 §3 S1 note: this is now a two-mechanism filter, and S1
+  // (quote recurrence) is deliberately independent of the registry — a quote
+  // repeated across enough distinct permalinks is excluded with NO registry
+  // entry at all (see rollup-quote-recurrence.test.js). To isolate "the
+  // registry rung specifically can fail" from S1 picking up the slack, this
+  // stays BELOW the quote-recurrence threshold (minQuoteRepeats, default 5):
+  // 3 distinct permalinks share the quote, not enough for either mechanism.
+  const rows = Array.from({ length: 3 }, (_, i) => contaminatedRow(i));
   const store = fakeStore(rows, {}); // no registry entries at all
 
   await runRollup({
@@ -153,6 +160,7 @@ test('with no registry seeded, the same corpus leaks the rule text (proves the c
 
   const minbar = store.saved.get('minbar').payload;
   assert.ok(minbar.dealBreakerBoard.some((d) => d.item === 'no ai feedback allowed'),
-    'without a seeded registry, the unfiltered item must appear — or this suite is vacuous');
+    'without a seeded registry and below the S1 recurrence threshold, the unfiltered item must appear — or this suite is vacuous');
   assert.strictEqual(minbar.excluded.byReason.registry, 0);
+  assert.strictEqual(minbar.excluded.byReason['quote-recurrence'], 0);
 });

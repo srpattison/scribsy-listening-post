@@ -42,7 +42,15 @@ CHAT_MODEL_VERSION="${CHAT_MODEL_VERSION:-2025-08-07}"  # alternatives: az cogni
 # "app settings" below) — deploy.sh no longer clobbers what it was not given.
 #
 # As-built sub list 2026-08-15 (23): the 22 of round 3 plus BetterOffline.
-DEFAULT_SUBREDDITS_VALUE='writing,writers,nanowrimo,WritingWithAI,selfpublish,fantasywriters,scifiwriting,PubTips,KeepWriting,writingadvice,AIWritingLounge,NewAuthor,FictionWriting,FanFiction,AO3,eroticauthors,BetaReaders,DestructiveReaders,worldbuilding,Screenwriting,writingcirclejerk,selfpublishing,BetterOffline'
+# CB-LISTEN-BOARDS-2 §3 S5 (2026-09-06, founder-approved bus 1008): +2,
+# bookcovers and writeresearch (25). Neither is an enclave sub — no SUB_TAGS
+# entry needed. NOTE: the live app already has a SUBREDDITS setting, so per
+# the settings-preservation guard below (`resolve`), this default is NOT what
+# reaches the live app on the next `bash deploy.sh` run — the live value wins.
+# Landing this addition requires the operator to export SUBREDDITS explicitly
+# (this value, or the live list plus these two) when redeploying; see the
+# CB-LISTEN-BOARDS-2 report for the exact command.
+DEFAULT_SUBREDDITS_VALUE='writing,writers,nanowrimo,WritingWithAI,selfpublish,fantasywriters,scifiwriting,PubTips,KeepWriting,writingadvice,AIWritingLounge,NewAuthor,FictionWriting,FanFiction,AO3,eroticauthors,BetaReaders,DestructiveReaders,worldbuilding,Screenwriting,writingcirclejerk,selfpublishing,BetterOffline,bookcovers,writeresearch'
 # Frame tags: skewed enclave subs are excluded from the population cohort and
 # reported as comparison frames. JSON map sub → enclave-pro | enclave-anti | enclave-satire.
 DEFAULT_SUB_TAGS_VALUE='{"WritingWithAI":"enclave-pro","AIWritingLounge":"enclave-pro","writingcirclejerk":"enclave-satire","BetterOffline":"enclave-anti"}'
@@ -80,6 +88,12 @@ DEFAULT_BOILERPLATE_MIN_CHARS_BODY='120'
 # Both floors are settings. A documented two-floor design with only one of them
 # configurable is how a tuned threshold silently becomes an untuned one.
 DEFAULT_BOILERPLATE_MIN_CHARS_TITLE='40'
+# CB-LISTEN-BOARDS-2 §3 S1: item-level exclusion by QUOTE recurrence (a quote
+# repeated across this many distinct permalinks in one sub is boilerplate on
+# its own evidence, independent of the registry). Floor is far below the body
+# floor above because the analyzer emits ~55-char sentence-level quotes.
+DEFAULT_BOILERPLATE_MIN_QUOTE_CHARS='20'
+DEFAULT_BOILERPLATE_MIN_QUOTE_REPEATS='5'
 # CB-LISTEN-CORRECT-1: hours of silence before the daily backfill sweep treats
 # a queued, unexhausted walk as orphaned and re-enqueues its wake-up message.
 DEFAULT_BACKFILL_SWEEP_STALE_HOURS='24'
@@ -232,6 +246,8 @@ resolve "COMMENT_MIN_CHARS"      "${COMMENT_MIN_CHARS:-}"      "$DEFAULT_COMMENT
 resolve "BOILERPLATE_MIN_REPEATS" "${BOILERPLATE_MIN_REPEATS:-}" "$DEFAULT_BOILERPLATE_MIN_REPEATS"
 resolve "BOILERPLATE_MIN_CHARS_BODY"  "${BOILERPLATE_MIN_CHARS_BODY:-}"  "$DEFAULT_BOILERPLATE_MIN_CHARS_BODY"
 resolve "BOILERPLATE_MIN_CHARS_TITLE" "${BOILERPLATE_MIN_CHARS_TITLE:-}" "$DEFAULT_BOILERPLATE_MIN_CHARS_TITLE"
+resolve "BOILERPLATE_MIN_QUOTE_CHARS" "${BOILERPLATE_MIN_QUOTE_CHARS:-}" "$DEFAULT_BOILERPLATE_MIN_QUOTE_CHARS"
+resolve "BOILERPLATE_MIN_QUOTE_REPEATS" "${BOILERPLATE_MIN_QUOTE_REPEATS:-}" "$DEFAULT_BOILERPLATE_MIN_QUOTE_REPEATS"
 resolve "MIN_COMMENTS_FOR_FETCH" "${MIN_COMMENTS_FOR_FETCH:-}" "3"
 resolve "BACKFILL_SWEEP_STALE_HOURS" "${BACKFILL_SWEEP_STALE_HOURS:-}" "$DEFAULT_BACKFILL_SWEEP_STALE_HOURS"
 resolve "AUDIT_MAX_TRACKED_HASHES"   "${AUDIT_MAX_TRACKED_HASHES:-}"   "$DEFAULT_AUDIT_MAX_TRACKED_HASHES"

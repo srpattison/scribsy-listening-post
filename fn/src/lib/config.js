@@ -144,6 +144,20 @@ function boilerplateMinCharsTitle(env = process.env) {
 // Retained name for the body floor — every existing caller means "body".
 const boilerplateMinChars = boilerplateMinCharsBody;
 
+// S1 quote-recurrence thresholds (CB-LISTEN-BOARDS-2 §3). Mechanical knobs
+// with defensible constants — see boilerplate-filter.js for why the floor is
+// far lower than the body floor (the analyzer emits ~55-char sentence quotes)
+// and why the repeat count reuses the same convention as BOILERPLATE_MIN_REPEATS.
+function boilerplateMinQuoteChars(env = process.env) {
+  const n = parseInt(env.BOILERPLATE_MIN_QUOTE_CHARS || '20', 10);
+  return Number.isFinite(n) && n > 0 ? n : 20;
+}
+
+function boilerplateMinQuoteRepeats(env = process.env) {
+  const n = parseInt(env.BOILERPLATE_MIN_QUOTE_REPEATS || '5', 10);
+  return Number.isFinite(n) && n > 0 ? n : 5;
+}
+
 // Staleness threshold (hours) before the backfill sweep treats a
 // `queued: true, exhausted: false` walk with no observed activity as orphaned
 // and re-enqueues its wake-up message (CB-LISTEN-CORRECT-1 §4). Mechanical
@@ -195,6 +209,8 @@ module.exports = {
   boilerplateMinChars,
   boilerplateMinCharsBody,
   boilerplateMinCharsTitle,
+  boilerplateMinQuoteChars,
+  boilerplateMinQuoteRepeats,
   backfillSweepStaleHours,
   auditMaxTrackedHashes,
   DEFAULT_AUDIT_MAX_TRACKED_HASHES,

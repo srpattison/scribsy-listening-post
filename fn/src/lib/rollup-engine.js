@@ -474,7 +474,7 @@ function buildSections({
             count(baselineCounts, String(b || '').toLowerCase().trim());
           }
           for (const d of r.dealBreakers) {
-            const reason = excluder.excludeItem(r, d.quote || d.item);
+            const reason = excluder.excludeItem(r, d.quote || d.item, { quote: d.quote });
             if (reason) { boilerplateFilter.markExcluded(excluded, reason); continue; }
             count(dbByKind, d.kind);
             const k = String(d.item || '').toLowerCase().trim();
@@ -500,7 +500,7 @@ function buildSections({
         forEachRow(humanRows, (r) => {
           for (const t of r.trustSignals) {
             if (!trust[t.direction]) continue; // unknown direction — skip, don't throw
-            const reason = excluder.excludeItem(r, t.quote || t.signal);
+            const reason = excluder.excludeItem(r, t.quote || t.signal, { quote: t.quote });
             if (reason) { boilerplateFilter.markExcluded(excluded, reason); continue; }
             const k = String(t.signal || '').toLowerCase().trim();
             count(trust[t.direction], k);
@@ -870,16 +870,39 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
     }
   }
 
+  // Quote-recurrence index (§3 S1) — pure/synchronous, built from the same
+  // humanRows population the boards themselves read, so it cannot fail for
+  // the reason the registry load below can (no store I/O).
+  const quoteIndex = boilerplateFilter.buildQuoteRecurrenceIndex(humanRows, {
+    minQuoteChars: config.boilerplateMinQuoteChars(env)
+  });
+  const excluderOpts = {
+    quoteIndex,
+    minQuoteChars: config.boilerplateMinQuoteChars(env),
+    minQuoteRepeats: config.boilerplateMinQuoteRepeats(env)
+  };
+
   // Item-level registry exclusion (§4.1). Preloaded once, per subreddit
   // actually present, so the (synchronous) board builders below can check
   // membership without making the whole section list async.
+  //
+  // §3 S3: a registry-load failure must be visible from /api/insights, not
+  // only logged — a silent fallback to an empty registry is exactly the
+  // failure mode this brief was filed to catch (boilerplateRegistry.error was
+  // null while the item filter was live, and no test could tell the
+  // difference because the fake store cannot throw). `registryHealth` below
+  // is folded into the rollup summary and surfaced through health().
   let excluder;
+  let registryHealth = { degraded: false, error: null };
   try {
     const registry = await boilerplateFilter.loadRegistryForSubs(store, rows.map((r) => r.subreddit));
-    excluder = boilerplateFilter.makeExcluder(registry);
+    excluder = boilerplateFilter.makeExcluder(registry, excluderOpts);
   } catch (e) {
-    context?.warn?.(`boilerplate registry load failed (non-fatal, item filter disabled this run): ${e.message}`);
-    excluder = boilerplateFilter.makeExcluder(new Map());
+    context?.warn?.(`boilerplate registry load failed (non-fatal, registry rung disabled this run): ${e.message}`);
+    registryHealth = { degraded: true, error: e.message, checkedAt: now().toISOString() };
+    // Quote-recurrence (S1) is independent of the registry and stays live even
+    // when the registry rung is down — defense in depth, not a full outage.
+    excluder = boilerplateFilter.makeExcluder(new Map(), excluderOpts);
   }
 
   const sections = buildSections({
@@ -913,6 +936,10 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
       clusteredNames: (results.features && results.features.clusteredNames) ?? null,
       totalNames: (results.features && results.features.totalNames) ?? null
     },
+    // §3 S3: this run's registry-load outcome, health-visible rather than
+    // only warn-logged. `degraded: true` means the registry rung of the item
+    // filter was disabled for this run (quote-recurrence still ran).
+    boilerplateRegistryHealth: registryHealth,
     // §4.1: per-section item-exclusion totals, echoed here so the next reader
     // can see the filter ran without opening every section payload.
     boilerplateExcluded: {
