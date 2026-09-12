@@ -99,6 +99,12 @@ async function health() {
     lastRollupSectionsWritten: (rollup && rollup.sectionsWritten) || [],
     lastRollupSectionsFailed: (rollup && rollup.sectionsFailed) || [],
     lastRollupRowsSkipped: (rollup && rollup.rowsSkipped) ?? null,
+    // CB-LISTEN-BOARDS-2 §3 S3: whether the item-filter's registry rung loaded
+    // on the last rollup. `degraded: true` means it fell back to an empty
+    // registry for that run (quote-recurrence exclusion still ran) — surfaced
+    // here rather than only warn-logged, so a future silent recurrence of the
+    // BOARDS-1 gap is dashboard-visible, not just log-visible.
+    boilerplateRegistryHealth: (rollup && rollup.boilerplateRegistryHealth) || null,
     // Prompt-side filtering (§3c) and the persisted long-run reports (§3d).
     filteredCommentsLast24h: filtered,
     boilerplateRegistry: registrySummary,

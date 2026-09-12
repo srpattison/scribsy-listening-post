@@ -400,15 +400,27 @@ function renderHealthBar(data, problems, trackedTotal) {
   const h = data.health || {};
   const failed = (h.lastRollupSectionsFailed || []).map((f) => f.name);
   const names = [...new Set([...problems.map((p) => p.key), ...failed])];
-  if (!names.length) { $('#healthbar').innerHTML = ''; return; }
+  // CB-LISTEN-BOARDS-2 §3 S3: a registry-load failure disables the item
+  // filter's registry rung without failing any section, so it never appears
+  // in `names` above — it must be surfaced on its own, not absorbed into a
+  // normal-looking result.
+  const registryDegraded = !!(h.boilerplateRegistryHealth && h.boilerplateRegistryHealth.degraded);
+  if (!names.length && !registryDegraded) { $('#healthbar').innerHTML = ''; return; }
   const backlog = (h.rowsUnanalyzed ?? null) !== null
     ? ` ${h.rowsUnanalyzed.toLocaleString()} of ${(h.rowsTotal || 0).toLocaleString()} rows still unanalyzed.`
     : '';
   const when = h.lastRollupAt ? ` Last rollup ${new Date(h.lastRollupAt).toLocaleString()}.` : '';
+  const sectionsLine = names.length
+    ? `<strong>${names.length} of ${trackedTotal} sections unavailable</strong>
+      <p class="sub">${names.map((n) => esc(n)).join(', ')} — shown below as failures, not as empty results.${when}${backlog}</p>`
+    : `<strong>Data health warning</strong><p class="sub">${when}${backlog}</p>`;
+  const registryLine = registryDegraded
+    ? `<p class="sub">Boilerplate registry unavailable on the last rollup (${esc(h.boilerplateRegistryHealth.error || 'unknown error')}) — item-level boilerplate exclusion ran without it; boards may under-exclude until the next successful rollup.</p>`
+    : '';
   $('#healthbar').innerHTML = `
     <div class="healthbar">
-      <strong>${names.length} of ${trackedTotal} sections unavailable</strong>
-      <p class="sub">${names.map((n) => esc(n)).join(', ')} — shown below as failures, not as empty results.${when}${backlog}</p>
+      ${sectionsLine}
+      ${registryLine}
     </div>`;
 }
 

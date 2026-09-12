@@ -55,13 +55,24 @@ const KNOWN_BOT_AUTHORS = new Set(['automoderator']);
 
 // Lowercase, strip URLs and markdown, collapse whitespace. Deliberately lossy:
 // two megathread copies differing only by a date stamp should still collide.
+//
+// CB-LISTEN-BOARDS-2 §3 S4: the same sentence decorated with markdown emphasis
+// (**bold**) and with smart quotes/dashes (“ ” ‘ ’ – —) must normalise to the
+// same string as a plain-quoted, unemphasised copy — otherwise byte-identical
+// boilerplate reads as several distinct hashes. Smart quotes/dashes are first
+// folded to their ASCII equivalents, then quote characters (straight or
+// folded) are stripped alongside markdown emphasis, so quoting style never
+// splits a hash.
 function normalizeText(s) {
   return String(s || '')
     .toLowerCase()
     .replace(/```[\s\S]*?```/g, ' ')          // fenced code
     .replace(/https?:\/\/\S+/g, ' ')          // urls
     .replace(/&[a-z]{2,8};/g, ' ')            // html entities
-    .replace(/[*_~`>#|]+/g, ' ')              // markdown emphasis / quotes / tables
+    .replace(/[‘’‚′]/g, "'")  // smart single quotes -> straight
+    .replace(/[“”„″]/g, '"')  // smart double quotes -> straight
+    .replace(/[‒–—―]/g, '-')  // figure/en/em/horizontal-bar dash -> hyphen
+    .replace(/[*_~`>#|"']+/g, ' ')            // markdown emphasis / quotes / tables
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')  // markdown links → label
     .replace(/\d{1,4}([-/]\d{1,4}){1,2}/g, ' ') // date stamps
     .replace(/\s+/g, ' ')

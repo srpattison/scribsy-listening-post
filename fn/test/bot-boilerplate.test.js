@@ -35,6 +35,29 @@ test('normalisation collapses the incidental differences between copies', () => 
   assert.strictEqual(a, b, 'markdown, case, urls, whitespace and date stamps must not split a hash');
 });
 
+test('CB-LISTEN-BOARDS-2 §3 S4: markdown emphasis and smart quotes collapse to one hash', () => {
+  // The live contamination shape: the identical rule sentence appears both
+  // plain and **bold**, and with straight vs smart/curly quotes — four
+  // variants of one string that must hash identically or the recurrence
+  // detector (S1) and the registry both undercount it.
+  const plain = "AI-generated feedback and 'reviews' is also not allowed.";
+  const bold = "**AI-generated feedback and 'reviews' is also not allowed.**";
+  const smartQuotes = 'AI-generated feedback and “reviews” is also not allowed.';
+  const boldSmartQuotes = '**AI-generated feedback and “reviews” is also not allowed.**';
+  const a = cc.normalizeText(plain);
+  assert.strictEqual(cc.normalizeText(bold), a, 'bold emphasis must not split the hash');
+  assert.strictEqual(cc.normalizeText(smartQuotes), a, 'smart double quotes must not split the hash');
+  assert.strictEqual(cc.normalizeText(boldSmartQuotes), a, 'both variants together must still collapse');
+});
+
+test('CB-LISTEN-BOARDS-2 §3 S4: smart dashes fold to a hyphen', () => {
+  const straight = cc.normalizeText('no ai tools - no exceptions - full stop');
+  const enDash = cc.normalizeText('no ai tools – no exceptions – full stop');
+  const emDash = cc.normalizeText('no ai tools — no exceptions — full stop');
+  assert.strictEqual(enDash, straight);
+  assert.strictEqual(emDash, straight);
+});
+
 test('repeat-hash flags boilerplate posted by ORDINARY DISTINCT usernames', () => {
   // The general case: a submission template the subreddit injects into post
   // bodies. No bot author, no distinguished flag, no sticky. If this only
