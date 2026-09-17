@@ -23,6 +23,7 @@ const commentPolicy = require('./comment-policy');
 const contentClass = require('./content-class');
 const boilerplateRegistry = require('./boilerplate-registry');
 const boilerplateFilter = require('./boilerplate-filter');
+const evidenceGate = require('./evidence-gate');
 
 // ---------------------------------------------------------------------------
 // Salience — corpus-derived, never engagement-derived (§3c)
@@ -308,7 +309,7 @@ function computeCohort(frameRows, tally) {
 function buildSections({
   rows, aiRows, humanRows, humanAiRows, nonHumanRows,
   weeks, env, aoai, store, context, now = () => new Date(),
-  commentMentions = [], commentStats = null, excluder
+  commentMentions = [], commentStats = null, excluder, registryHealth
 }) {
   const salience = buildRecurrenceIndex(humanRows);
   return [
@@ -750,6 +751,10 @@ function buildSections({
     {
       name: 'brief',
       build: async (results) => {
+        const gate = evidenceGate.evaluate(results, registryHealth);
+        if (gate.status === 'blocked') {
+          return evidenceGate.blockedBrief(gate, aoai.standingQuestions());
+        }
         const dist = results.distributions || {};
         const minbar = results.minbar || {};
         // The evidence pack below is drawn from minbar/trust/distributions,
@@ -779,11 +784,12 @@ function buildSections({
           brief.questions = aoai.standingQuestions();
           brief.generatedAt = now().toISOString();
           brief.excluded = excluded;
+          brief.evidenceGate = gate;
           return brief;
         } catch (e) {
           context?.error?.(`strategy brief failed: ${e.message}`);
           const prev = await store.getAggregate('brief', 'latest');
-          if (prev && !prev.error) return { ...prev, _stale: true, _staleReason: e.message, excluded };
+          if (prev && !prev.error && prev.evidenceGate?.version === evidenceGate.VERSION && prev.evidenceGate.status === 'pass') return { ...prev, _stale: true, _staleReason: e.message, excluded };
           return { answers: [], questions: aoai.standingQuestions(), _stale: true, _staleReason: e.message, excluded };
         }
       }
@@ -907,7 +913,7 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
 
   const sections = buildSections({
     rows, aiRows, humanRows, humanAiRows, nonHumanRows,
-    weeks, env, aoai, store, context, now, commentMentions, commentStats, excluder
+    weeks, env, aoai, store, context, now, commentMentions, commentStats, excluder, registryHealth
   });
   const { results, written, failed, rowIssues } = await runSections(sections, {
     saveAggregate: (p, k, v) => store.saveAggregate(p, k, v),
@@ -940,6 +946,7 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
     // only warn-logged. `degraded: true` means the registry rung of the item
     // filter was disabled for this run (quote-recurrence still ran).
     boilerplateRegistryHealth: registryHealth,
+    briefEvidenceGate: results.brief?.evidenceGate || { version: evidenceGate.VERSION, status: 'blocked', blockedBy: [{ section: 'brief', kind: 'source-error', reason: 'Brief section failed.' }] },
     // §4.1: per-section item-exclusion totals, echoed here so the next reader
     // can see the filter ran without opening every section payload.
     boilerplateExcluded: {

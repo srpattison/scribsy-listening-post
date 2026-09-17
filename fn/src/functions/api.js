@@ -12,6 +12,7 @@ const config = require('../lib/config');
 const boilerplateRegistry = require('../lib/boilerplate-registry');
 const provenance = require('../lib/analysis-provenance');
 const backfillSweep = require('../lib/backfill-sweep');
+const evidenceGate = require('../lib/evidence-gate');
 const { askCorpus, embedTexts, b64ToVec, cosine, analysisPromptVersion, deploymentInForce } = require('../lib/aoai');
 
 const VIEWS = ['meta', 'heatmap', 'stance', 'distributions', 'features', 'minbar', 'trust', 'cohort', 'quotes', 'personas', 'brief', 'competitors', 'resonance', 'signals', 'discovery', 'rules'];
@@ -105,6 +106,7 @@ async function health() {
     // here rather than only warn-logged, so a future silent recurrence of the
     // BOARDS-1 gap is dashboard-visible, not just log-visible.
     boilerplateRegistryHealth: (rollup && rollup.boilerplateRegistryHealth) || null,
+    briefEvidenceGate: (rollup && rollup.briefEvidenceGate) || null,
     // Prompt-side filtering (§3c) and the persisted long-run reports (§3d).
     filteredCommentsLast24h: filtered,
     boilerplateRegistry: registrySummary,
@@ -144,12 +146,24 @@ app.http('insights', {
       const out = {};
       for (const v of VIEWS) out[v] = await store.getAggregate(v, 'latest');
       out.health = await health();
-      return { jsonBody: out, headers: { 'Cache-Control': 'public, max-age=300' } };
+      out.brief = evidenceGate.publishBrief(out.brief, out, out.health.boilerplateRegistryHealth);
+      out.features = evidenceGate.publishFeatures(out.features);
+      return { jsonBody: out, headers: { 'Cache-Control': 'no-store' } };
     }
     if (!VIEWS.includes(view)) {
       return { status: 400, jsonBody: { error: `view must be one of ${VIEWS.join(', ')}, health, snapshots, or all` } };
     }
+    if (view === 'brief') {
+      const evidence = {};
+      for (const section of evidenceGate.DEPENDENCIES) {
+        evidence[section] = await store.getAggregate(section, 'latest').catch((e) => ({ unavailable: true, degradedReason: e.message }));
+      }
+      const rollup = await store.getAggregate('rollup-health', 'latest').catch(() => null);
+      const brief = await store.getAggregate('brief', 'latest').catch(() => null);
+      return { jsonBody: evidenceGate.publishBrief(brief, evidence, rollup?.boilerplateRegistryHealth), headers: { 'Cache-Control': 'no-store' } };
+    }
     const data = await store.getAggregate(view, 'latest');
+    if (view === 'features') return { jsonBody: evidenceGate.publishFeatures(data), headers: { 'Cache-Control': 'no-store' } };
     return { jsonBody: data || {}, headers: { 'Cache-Control': 'public, max-age=300' } };
   }
 });
