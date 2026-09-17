@@ -358,6 +358,7 @@ const stanceColor = (s) => cssVar('--st-' + s) || cssVar('--st-conflicted');
 function sectionProblem(v) {
   if (v === null || v === undefined) return { kind: 'missing' };
   if (typeof v === 'object' && v.error) return { kind: 'error', error: v.error, failedAt: v.failedAt };
+  if (v.degraded || v.unavailable || v.evidenceGate?.status === 'blocked') return { kind: 'degraded', error: v.degradedReason || 'Required evidence could not be verified.' };
   if (typeof v === 'object' && Object.keys(v).length === 0) return { kind: 'missing' };
   return null;
 }
@@ -365,6 +366,7 @@ function sectionProblem(v) {
 function renderUnavailable(sels, problem) {
   const detail = problem.kind === 'missing'
     ? 'The last rollup never wrote this section.'
+    : problem.kind === 'degraded' ? esc(problem.error)
     : `The last rollup failed here: ${esc(problem.error)}`;
   const when = problem.failedAt ? ` · ${new Date(problem.failedAt).toLocaleString()}` : '';
   sels.forEach((sel, i) => {
@@ -372,7 +374,7 @@ function renderUnavailable(sels, problem) {
     if (!el) return;
     el.innerHTML = i === 0
       ? `<div class="unavail">
-           <strong>Unavailable — rollup failed</strong>
+           <strong>Unavailable — ${problem.kind === 'degraded' ? 'evidence degraded' : 'rollup failed'}</strong>
            <p class="sub">${detail}${when}</p>
            <p class="sub">This is not an empty result. Check <code>/api/insights?view=health</code>.</p>
          </div>`

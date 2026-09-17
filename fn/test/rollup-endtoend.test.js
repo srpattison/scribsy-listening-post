@@ -213,8 +213,10 @@ test('AOAI failure degrades the section instead of failing the run', async () =>
 
   assert.strictEqual(summary.ok, true, 'AOAI outages must not fail sections outright');
   assert.deepStrictEqual(summary.sectionsWritten, ALL_SECTIONS);
-  // features degrades to raw counts; personas/brief mark themselves stale.
+  // Features retains diagnostic raw counts and personas marks itself stale;
+  // the dependent brief must block instead of recycling previous answers.
   assert.strictEqual(store.saved.get('features').payload.degraded, true);
   assert.strictEqual(store.saved.get('personas').payload._stale, true);
-  assert.strictEqual(store.saved.get('brief').payload._stale, true);
+  assert.strictEqual(store.saved.get('brief').payload.evidenceGate.status, 'blocked');
+  assert.deepStrictEqual(store.saved.get('brief').payload.answers, []);
 });
