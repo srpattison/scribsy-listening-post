@@ -326,7 +326,7 @@ async function load() {
   if (!base || !key) { $('#setup').hidden = false; return; }
   $('#setupErr').textContent = '';
   try {
-    const res = await fetch(`${base}/api/insights?view=all&code=${encodeURIComponent(key)}`);
+    const res = await fetch(`${base}/api/insights?view=all`, { headers: { 'x-functions-key': key } });
     if (!res.ok) throw new Error(`API ${res.status}`);
     const data = await res.json();
     window.__data = data;
