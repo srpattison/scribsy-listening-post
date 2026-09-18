@@ -17,8 +17,28 @@ function client(choice, usage = {}) {
     }
   };
   vm.runInNewContext(fs.readFileSync(file, 'utf8'), sandbox, { filename: file });
-  return { run: (names = ['outline']) => sandbox.module.exports.normalizeFeatures(names), calls };
+  return { run: (names = ['outline']) => sandbox.module.exports.normalizeFeatures(names), brief: pack => sandbox.module.exports.strategyBrief(pack), calls };
 }
+
+test('strategy transport preserves late aggregates and scope in valid bounded JSON', async () => {
+  const c = client({finish_reason:'stop',message:{content:'{"answers":[{"caveats":"Existing caveat."}]}'}});
+  const input = { trustBoard: { builds: [{count:7,examples:[{quote:'x'.repeat(70000)}]}] }, featureScope:{clusteredNames:400,totalNames:48836}, distributions:{stances:{hostile:11}}, sampleQuotes:[{quote:'z'.repeat(61000)},{quote:'complete short quote'}] };
+  const result = await c.brief(input);
+  const sent = JSON.parse(c.calls[0].messages[1].content.split('EVIDENCE PACK (aggregates + samples):\n')[1]);
+  assert.equal(sent.trustBoard.builds[0].count,7);
+  assert.equal(sent.distributions.stances.hostile,11);
+  assert.equal(sent.featureScope.totalNames,48836);
+  assert.equal(sent.sampleQuotes[0].quote,'complete short quote');
+  assert.ok(JSON.stringify(sent).length <= 60000);
+  assert.match(result.answers[0].caveats,/400 selected entries out of 48836/);
+  assert.equal(input.sampleQuotes.length,2);
+});
+
+test('oversized strategy aggregates fail before spending rather than being cut off', async () => {
+  const c = client({finish_reason:'stop',message:{content:'{"answers":[]}'}});
+  await assert.rejects(c.brief({baselineTop:[['x'.repeat(60001),1]]}),/aggregate evidence exceeds/);
+  assert.equal(c.calls.length,0);
+});
 
 test('oversized feature input is rejected before a model call rather than silently clipped', async () => {
   const c = client({finish_reason:'stop',message:{content:'{"groups":[]}'}});
