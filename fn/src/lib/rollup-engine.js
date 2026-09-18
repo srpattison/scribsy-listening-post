@@ -772,6 +772,7 @@ function buildSections({
           const brief = await aoai.strategyBrief({
             evidenceQuality: {
               semanticReview: 'unreviewed', confidenceCeiling: 'low',
+              quoteIllustrations: 'withheld pending semantic review',
               note: 'Source matching validates quotation origin only, not intent, stance, topic labels or population representativeness. Hostile and wary are separate coded categories; their sum is a negative-stance proxy and does not measure total rejection of all AI. AI-related rows cannot establish shares of all writers.'
             },
             corpusScope: {
@@ -792,6 +793,7 @@ function buildSections({
               clusteredNames: results.features?.clusteredNames ?? null,
               totalNames: results.features?.totalNames ?? null,
               selection: 'seeded source/community/post-comment/month coverage',
+              units: 'totalNames counts eligible item mentions including repeats, not unique capabilities or dictionary entries. clusteredNames counts sampled mentions.',
               strataObserved: results.features?.coverage?.strata?.length ?? null,
               strataCovered: results.features?.coverage?.strata?.filter(s => s.selected > 0).length ?? null,
               note: 'Feature counts cover a balanced diagnostic sample across observed source/community/post-comment/month groups. It is not population-weighted or a corpus-wide ranking; state selected and eligible counts and this limitation.'
@@ -804,8 +806,11 @@ function buildSections({
               toolCounts: topNObj(dist.toolCounts, 12),
               painCounts: topNObj(dist.painCounts, 15)
             },
-            personas: results.personas && results.personas.personas,
-            sampleQuotes: ((results.quotes && results.quotes.quotes) || []).slice(0, 120)
+            personaScope: {
+              note: 'These are model-generated hypotheses, not observed audience segments. They do not establish dominance, population shares, joint needs or demand. No measured joint indicator establishes an AI-curious AND frustrated-by-lack-of-safe-experimentation cohort.'
+            },
+            personas: (results.personas?.personas || []).map(p => ({ name: p.name, archetype: p.archetype, stance: p.stance })),
+            sampleQuotes: []
           });
           brief.questions = aoai.standingQuestions();
           brief.generatedAt = now().toISOString();

@@ -28,7 +28,7 @@ async function rollup({ degraded = false, registryFails = false, synthesisFails 
   };
   const aoai = {
     normalizeFeatures: async () => { if (degraded) throw new Error('AOAI returned empty content'); return { groups: [{ canonical: 'feedback', members: [0] }] }; },
-    synthesizePersonas: async () => ({ personas: [] }),
+    synthesizePersonas: async () => ({ personas: [{ name: 'Synthetic persona', archetype: 'curious', stance: 'curious', share_pct: 75, goals: 'Invented joint need', representative_quote: 'Model-generated quote' }] }),
     standingQuestions: () => ['custom question with unknown dependencies'],
     strategyBrief: async (evidence) => { calls.push(evidence); if (synthesisFails) throw new Error('synthesis offline'); return { answers: oldAnswers }; }
   };
@@ -57,7 +57,12 @@ test('healthy control crosses the same synthesis boundary and publishes its answ
   assert.equal(r.calls[0].corpusScope.humanRows, 1);
   assert.match(r.calls[0].corpusScope.units, /not distinct posts or people/);
   assert.match(r.calls[0].cohortScope.units, /NOT a denominator/);
-  assert.equal(r.calls[0].sampleQuotes.length, 1);
+  assert.equal(r.calls[0].sampleQuotes.length, 0);
+  assert.equal(r.calls[0].evidenceQuality.confidenceCeiling, 'low');
+  assert.match(r.calls[0].personaScope.note, /No measured joint indicator/);
+  assert.equal(r.calls[0].personas.length, 1);
+  assert.equal(r.calls[0].personas[0].archetype, 'curious');
+  assert.ok(r.calls[0].personas.every(p => !('share_pct' in p) && !('goals' in p)));
   assert.equal(r.saved.get('brief').evidenceGate.status, 'pass');
   assert.deepEqual(gate.publishBrief(r.saved.get('brief'), Object.fromEntries(r.saved), { degraded: false }).answers, oldAnswers);
 });
