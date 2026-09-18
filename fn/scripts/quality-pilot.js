@@ -11,10 +11,20 @@ async function main() {
   const out = path.resolve(outputPath), repo = path.resolve(__dirname, '../..');
   const relative = path.relative(repo, out);
   if (!relative || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative))) throw new Error('Output must be outside repository');
-  if (fs.existsSync(out)) throw new Error('Output already exists; refusing to overwrite pilot evidence');
+  const resume = process.argv[5] === '--resume';
+  if (fs.existsSync(out) && !resume) throw new Error('Output already exists; use explicit --resume to continue preserved evidence');
   const archive = JSON.parse(fs.readFileSync(archivePath, 'utf8'));
   const rows = require('../src/lib/frozen-pilot').frozenPilotRows(archive);
   const q = require('../src/lib/quality-benchmark');
+  let previous = null;
+  if (resume) {
+    const file = path.join(out, 'pilot.private.json');
+    previous = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const allowed = new Set(rows.map(q.identity)), completed = previous.results.map(result => result.id);
+    if (previous.selectionHash !== archive.manifest.pilot.selectionHash ||
+        new Set(completed).size !== completed.length || completed.some(id => !allowed.has(id))) throw new Error('Resume checkpoint membership mismatch');
+    fs.copyFileSync(file, path.join(out, `before-resume-${Date.now()}.private.json`), fs.constants.COPYFILE_EXCL);
+  }
   for (const setting of JSON.parse(fs.readFileSync(settingsPath, 'utf8'))) process.env[setting.name] = setting.value;
   fs.mkdirSync(out, { recursive: true, mode: 0o700 });
   const store = require('../src/lib/store'), aoai = require('../src/lib/aoai');
@@ -23,7 +33,7 @@ async function main() {
   const { idFromRowKey, kindOf } = require('../src/lib/rowkeys');
   const { reserveDailySlot } = require('../src/lib/daily-cap');
   const config = require('../src/lib/config');
-  const usage = { requests: 0, responsesWithUsage: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  const usage = previous?.usage || { requests: 0, responsesWithUsage: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (...args) => {
     const response = await realFetch(...args);
@@ -41,8 +51,10 @@ async function main() {
     }
     return response;
   };
-  const results = [], startedAt = new Date().toISOString();
-  let cursor = 0, errors = 0, stopped = null, checkpoint = Promise.resolve();
+  const results = previous?.results || [], startedAt = previous?.startedAt || new Date().toISOString();
+  const completedIds = new Set(results.map(result => result.id));
+  const pendingRows = rows.filter(row => !completedIds.has(q.identity(row)));
+  let cursor = 0, errors = previous?.errors || 0, consecutiveErrors = 0, stopped = null, checkpoint = Promise.resolve();
   const blobName = `lp-quality/${path.basename(out)}`;
   const snapshot = () => ({ version: 1, startedAt, updatedAt: new Date().toISOString(), selectionHash: archive.manifest.pilot.selectionHash,
     selected: rows.length, processed: results.length, errors, stopped, usage: { ...usage }, results: [...results],
@@ -54,9 +66,9 @@ async function main() {
     return checkpoint;
   };
   try {
-    await Promise.all(Array.from({ length: 8 }, async () => {
-      while (cursor < rows.length && !stopped) {
-        const row = rows[cursor++], id = q.identity(row);
+    await Promise.all(Array.from({ length: 16 }, async () => {
+      while (cursor < pendingRows.length && !stopped) {
+        const row = pendingRows[cursor++], id = q.identity(row);
         try {
           const raw = await store.getRaw(row.partitionKey, row.createdUtc, idFromRowKey(row.rowKey), kindOf(row));
           const hashes = registry.get(String(row.partitionKey).toLowerCase());
@@ -67,14 +79,17 @@ async function main() {
           const reservation = await reserveDailySlot(store.aggregateBackend('analyze-counter', day), cap);
           if (!reservation.ok) { stopped = 'daily-cap'; break; }
           const analysis = await aoai.analyzePost(raw.post, kept);
+          consecutiveErrors = 0;
           const newRow = { ...row, analysisJson: JSON.stringify(analysis) };
           results.push({ id, row, raw, analysis, filteredComments: reasons,
             oldChecks: q.checkQuotes(row, raw, { registry: hashes }), newChecks: q.checkQuotes(newRow, raw, { registry: hashes }),
             changedFields: Object.keys(analysis).filter(key => key !== '_provenance' && JSON.stringify(analysis[key]) !== JSON.stringify(JSON.parse(row.analysisJson)[key])) });
         } catch (error) {
           errors++;
+          consecutiveErrors++;
           results.push({ id, error: 'row-comparison-failed', privateDetail: error.message });
-          if (errors >= 5) stopped = 'five-row-errors';
+          // Sparse refusals remain in the denominator; an outage stops spend.
+          if (consecutiveErrors >= 5) stopped = 'five-consecutive-row-errors';
         }
         if (results.length % 10 === 0) {
           await persist();

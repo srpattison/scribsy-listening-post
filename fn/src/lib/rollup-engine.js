@@ -558,7 +558,7 @@ function buildSections({
           ...primary,
           primaryFrame: frames.reddit ? 'reddit (general subs)' : Object.keys(frames)[0] || 'none',
           frames,
-          frameNote: 'Frames are never pooled. Reddit general subs are the population-representative primary; enclave subs and Bluesky topic streams are keyword- or community-selected and cannot answer population questions. bluesky-community is the only unfiltered Bluesky writer sample.'
+          frameNote: 'Frames are never pooled. Reddit general subs are the primary observed frame, not a probability sample of writers. Enclave and Bluesky topic streams are deliberately selected. Bluesky community streams avoid the AI keyword filter but are still selected online communities. No frame establishes writer-population prevalence.'
         };
       }
     },
@@ -770,6 +770,10 @@ function buildSections({
         const excluded = boilerplateFilter.combineExcluded([minbar.excluded, results.trust && results.trust.excluded, dist.excluded]);
         try {
           const brief = await aoai.strategyBrief({
+            evidenceQuality: {
+              semanticReview: 'unreviewed', confidenceCeiling: 'low',
+              note: 'Source matching validates quotation origin only, not intent, stance, topic labels or population representativeness. Hostile and wary are separate coded categories; their sum is a negative-stance proxy and does not measure total rejection of all AI. AI-related rows cannot establish shares of all writers.'
+            },
             corpusScope: {
               humanRows: results.meta?.totalPosts ?? null,
               humanAiRows: results.meta?.aiRelated ?? null,

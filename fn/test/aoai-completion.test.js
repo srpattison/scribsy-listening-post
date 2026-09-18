@@ -40,6 +40,16 @@ test('oversized strategy aggregates fail before spending rather than being cut o
   assert.equal(c.calls.length,0);
 });
 
+test('unreviewed evidence enforces low confidence even when the model returns high', async () => {
+  const c = client({ finish_reason: 'stop', message: { content: '{"answers":[{"answer":"Observed only in the sampled frame.","confidence":"high"}]}' } });
+  const result = await c.brief({ evidenceQuality: { semanticReview: 'unreviewed', confidenceCeiling: 'low' } });
+  assert.equal(result.answers[0].confidence, 'low');
+  assert.match(c.calls[0].messages[0].content, /NOT a count of people who totally reject all AI/);
+  assert.match(c.calls[0].messages[0].content, /Never call any frame population-representative/);
+  const control = client({ finish_reason: 'stop', message: { content: '{"answers":[{"confidence":"high"}]}' } });
+  assert.equal((await control.brief({})).answers[0].confidence, 'high');
+});
+
 test('oversized feature input is rejected before a model call rather than silently clipped', async () => {
   const c = client({finish_reason:'stop',message:{content:'{"groups":[]}'}});
   await assert.rejects(c.run(['x'.repeat(20001)]), /input exceeds/);
