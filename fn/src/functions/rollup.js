@@ -11,9 +11,9 @@
 const { app } = require('@azure/functions');
 const store = require('../lib/store');
 const aoai = require('../lib/aoai');
-const { runRollup } = require('../lib/rollup-engine');
+const { runSourceCheckedRollup } = require('../lib/contribution-filter');
 
-const run = (context) => runRollup({ store, aoai, context, env: process.env });
+const run = (context) => runSourceCheckedRollup({ store, aoai, context, env: process.env });
 
 app.timer('rollupDaily', {
   schedule: '0 0 13 * * *',

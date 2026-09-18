@@ -24,6 +24,7 @@ const contentClass = require('./content-class');
 const boilerplateRegistry = require('./boilerplate-registry');
 const boilerplateFilter = require('./boilerplate-filter');
 const evidenceGate = require('./evidence-gate');
+const { selectFeatures } = require('./feature-sampling');
 
 // ---------------------------------------------------------------------------
 // Salience — corpus-derived, never engagement-derived (§3c)
@@ -309,7 +310,7 @@ function computeCohort(frameRows, tally) {
 function buildSections({
   rows, aiRows, humanRows, humanAiRows, nonHumanRows,
   weeks, env, aoai, store, context, now = () => new Date(),
-  commentMentions = [], commentStats = null, excluder, registryHealth
+  commentMentions = [], commentStats = null, excluder, registryHealth, contributionHealth = null
 }) {
   const salience = buildRecurrenceIndex(humanRows);
   return [
@@ -410,20 +411,24 @@ function buildSections({
       build: async (_r, tally) => {
         const rawFeatures = [];
         forEachRow(humanRows, (r) => {
-          for (const f of r.features) {
-            rawFeatures.push({ name: f.feature, aiRelated: !!f.ai_related, quote: f.quote, permalink: r.permalink, subreddit: r.subreddit });
+          for (const [index, f] of r.features.entries()) {
+            rawFeatures.push({ partitionKey: r.subreddit, rowKey: `${r.id}|${index}`,
+              source: r.source, kind: r.kind, createdUtc: r.createdUtc,
+              value: { name: f.feature, aiRelated: !!f.ai_related, quote: f.quote, permalink: r.permalink, subreddit: r.subreddit } });
           }
         }, tally);
-        if (!rawFeatures.length) return { featureBoard: [], clusteredNames: 0, totalNames: 0 };
+        const sourceChecks = contributionHealth;
+        if (!rawFeatures.length) return { featureBoard: [], clusteredNames: 0, totalNames: 0, sourceChecks };
         const totalNames = rawFeatures.length;
+        const { selected, coverage } = selectFeatures(rawFeatures);
         // The cap stays (§4.2: do not raise it blind), but truncation is now
         // recorded rather than silent.
         const clusteredNames = Math.min(400, totalNames);
         try {
-          const { groups } = await aoai.normalizeFeatures(rawFeatures.map((f) => f.name).slice(0, 400));
+          const { groups } = await aoai.normalizeFeatures(selected.map((f) => f.name));
           const featureBoard = groups
             .map((g) => {
-              const members = g.members.map((i) => rawFeatures[i]).filter(Boolean);
+              const members = g.members.map((i) => selected[i]).filter(Boolean);
               const aiVotes = members.filter((m) => m.aiRelated).length;
               return {
                 feature: g.canonical,
@@ -434,7 +439,7 @@ function buildSections({
             })
             .sort((a, b) => b.count - a.count)
             .slice(0, 40);
-          return { featureBoard, clusteredNames, totalNames };
+          return { featureBoard, clusteredNames, totalNames, sourceChecks, coverage };
         } catch (e) {
           // Degrade to raw counts rather than failing the section outright, but
           // preserve aiRelated by the same majority rule used in the primary
@@ -443,7 +448,7 @@ function buildSections({
           // ai_related flag was correct.
           context?.error?.(`feature normalization failed: ${e.message}`);
           const groupsByName = {};
-          for (const f of rawFeatures) {
+          for (const { value: f } of rawFeatures) {
             const key = String(f.name || '').toLowerCase().trim();
             if (!key) continue;
             (groupsByName[key] = groupsByName[key] || []).push(f);
@@ -459,7 +464,7 @@ function buildSections({
               };
             })
             .sort((a, b) => b.count - a.count).slice(0, 25);
-          return { featureBoard, degraded: true, degradedReason: e.message, clusteredNames, totalNames };
+          return { featureBoard, degraded: true, degradedReason: e.message, clusteredNames, totalNames, sourceChecks, coverage };
         }
       }
     },
@@ -553,7 +558,7 @@ function buildSections({
           ...primary,
           primaryFrame: frames.reddit ? 'reddit (general subs)' : Object.keys(frames)[0] || 'none',
           frames,
-          frameNote: 'Frames are never pooled. Reddit general subs are the population-representative primary; enclave subs and Bluesky topic streams are keyword- or community-selected and cannot answer population questions. bluesky-community is the only unfiltered Bluesky writer sample.'
+          frameNote: 'Frames are never pooled. Reddit general subs are the primary observed frame, not a probability sample of writers. Enclave and Bluesky topic streams are deliberately selected. Bluesky community streams avoid the AI keyword filter but are still selected online communities. No frame establishes writer-population prevalence.'
         };
       }
     },
@@ -571,7 +576,8 @@ function buildSections({
               topics: r.topics, subreddit: r.subreddit, permalink: r.permalink,
               title: r.title, week: r.week, kind: r.kind
             })),
-          ranking: 'recurrence across distinct threads — never Reddit engagement'
+          ranking: 'recurrence across distinct threads — never Reddit engagement',
+          sourceChecks: contributionHealth
         };
       }
     },
@@ -764,6 +770,11 @@ function buildSections({
         const excluded = boilerplateFilter.combineExcluded([minbar.excluded, results.trust && results.trust.excluded, dist.excluded]);
         try {
           const brief = await aoai.strategyBrief({
+            evidenceQuality: {
+              semanticReview: 'unreviewed', confidenceCeiling: 'low',
+              quoteIllustrations: 'withheld pending semantic review',
+              note: 'Source matching validates quotation origin only, not intent, stance, topic labels or population representativeness. Hostile and wary are separate coded categories; their sum is a negative-stance proxy and does not measure total rejection of all AI. AI-related rows cannot establish shares of all writers.'
+            },
             corpusScope: {
               humanRows: results.meta?.totalPosts ?? null,
               humanAiRows: results.meta?.aiRelated ?? null,
@@ -781,7 +792,11 @@ function buildSections({
             featureScope: {
               clusteredNames: results.features?.clusteredNames ?? null,
               totalNames: results.features?.totalNames ?? null,
-              note: 'Feature counts cover only the first selected entries in storage order. This is not a representative sample or a corpus-wide ranking; state this limitation in feature-related answers.'
+              selection: 'seeded source/community/post-comment/month coverage',
+              units: 'totalNames counts eligible item mentions including repeats, not unique capabilities or dictionary entries. clusteredNames counts sampled mentions.',
+              strataObserved: results.features?.coverage?.strata?.length ?? null,
+              strataCovered: results.features?.coverage?.strata?.filter(s => s.selected > 0).length ?? null,
+              note: 'Feature counts cover a balanced diagnostic sample across observed source/community/post-comment/month groups. It is not population-weighted or a corpus-wide ranking; state selected and eligible counts and this limitation.'
             },
             distributions: {
               stances: dist.stances || {},
@@ -791,8 +806,11 @@ function buildSections({
               toolCounts: topNObj(dist.toolCounts, 12),
               painCounts: topNObj(dist.painCounts, 15)
             },
-            personas: results.personas && results.personas.personas,
-            sampleQuotes: ((results.quotes && results.quotes.quotes) || []).slice(0, 120)
+            personaScope: {
+              note: 'These are model-generated hypotheses, not observed audience segments. They do not establish dominance, population shares, joint needs or demand. No measured joint indicator establishes an AI-curious AND frustrated-by-lack-of-safe-experimentation cohort.'
+            },
+            personas: (results.personas?.personas || []).map(p => ({ name: p.name, archetype: p.archetype, stance: p.stance })),
+            sampleQuotes: []
           });
           brief.questions = aoai.standingQuestions();
           brief.generatedAt = now().toISOString();
@@ -837,7 +855,7 @@ function buildSections({
 // Entry point
 // ---------------------------------------------------------------------------
 
-async function runRollup({ store, aoai, context, env = process.env, now = () => new Date(), fetchImpl = globalThis.fetch }) {
+async function runRollup({ store, aoai, context, env = process.env, now = () => new Date(), fetchImpl = globalThis.fetch, contributionHealth = null }) {
   const startedMs = Date.now();
   const rawRows = await store.listAnalyzedPosts();
   const { items: parsed, skipped: rowsSkipped } = parseRows(rawRows);
@@ -926,7 +944,7 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
 
   const sections = buildSections({
     rows, aiRows, humanRows, humanAiRows, nonHumanRows,
-    weeks, env, aoai, store, context, now, commentMentions, commentStats, excluder, registryHealth
+    weeks, env, aoai, store, context, now, commentMentions, commentStats, excluder, registryHealth, contributionHealth
   });
   const { results, written, failed, rowIssues } = await runSections(sections, {
     saveAggregate: (p, k, v) => store.saveAggregate(p, k, v),
@@ -939,6 +957,7 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
     sectionsWritten: written,
     sectionsFailed: failed,
     rowsScanned: rawRows.length,
+    contributionHealth,
     rowsAnalyzed: rows.length,
     rowsSkipped,
     // Corpus/pricing figures for the comment round. `commentCorpus.wouldSelect`
@@ -973,6 +992,7 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
       ])
     },
     durationMs: Date.now() - startedMs,
+    totalDurationMs: Date.now() - startedMs + (contributionHealth?.preflightDurationMs || 0),
     finishedAt: now().toISOString()
   };
 
