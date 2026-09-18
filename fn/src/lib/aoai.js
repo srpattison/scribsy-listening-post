@@ -419,7 +419,10 @@ evidence = named aggregate fields with their observed counts and scope. Only use
   const user = `STANDING QUESTIONS:\n${standingQuestions().map((q, i) => `${i + 1}. ${q}`).join('\n')}\n\nEVIDENCE PACK (aggregates + samples):\n${JSON.stringify(pack)}`;
   const brief = await chatJson(system, user, 'strategy_brief', BRIEF_SCHEMA, 12000);
   if (pack.evidenceQuality?.confidenceCeiling === 'low') {
-    for (const answer of brief.answers || []) answer.confidence = 'low';
+    for (const answer of brief.answers || []) {
+      answer.confidence = 'low';
+      answer.caveats = [answer.caveats, 'Semantic labels remain unreviewed: source matching does not validate intent, stance, or a tooling requirement. Stance-basis categories overlap; their counts cannot be added to infer how many distinct rows or people hold an articulated position.'].filter(Boolean).join(' ');
+    }
   }
   const scope = pack.featureScope;
   if (Number.isInteger(scope?.clusteredNames) && Number.isInteger(scope?.totalNames)) {
