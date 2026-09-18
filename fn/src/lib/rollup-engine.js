@@ -309,7 +309,7 @@ function computeCohort(frameRows, tally) {
 function buildSections({
   rows, aiRows, humanRows, humanAiRows, nonHumanRows,
   weeks, env, aoai, store, context, now = () => new Date(),
-  commentMentions = [], commentStats = null, excluder, registryHealth
+  commentMentions = [], commentStats = null, excluder, registryHealth, contributionHealth = null
 }) {
   const salience = buildRecurrenceIndex(humanRows);
   return [
@@ -414,7 +414,8 @@ function buildSections({
             rawFeatures.push({ name: f.feature, aiRelated: !!f.ai_related, quote: f.quote, permalink: r.permalink, subreddit: r.subreddit });
           }
         }, tally);
-        if (!rawFeatures.length) return { featureBoard: [], clusteredNames: 0, totalNames: 0 };
+        const sourceChecks = contributionHealth;
+        if (!rawFeatures.length) return { featureBoard: [], clusteredNames: 0, totalNames: 0, sourceChecks };
         const totalNames = rawFeatures.length;
         // The cap stays (§4.2: do not raise it blind), but truncation is now
         // recorded rather than silent.
@@ -434,7 +435,7 @@ function buildSections({
             })
             .sort((a, b) => b.count - a.count)
             .slice(0, 40);
-          return { featureBoard, clusteredNames, totalNames };
+          return { featureBoard, clusteredNames, totalNames, sourceChecks };
         } catch (e) {
           // Degrade to raw counts rather than failing the section outright, but
           // preserve aiRelated by the same majority rule used in the primary
@@ -459,7 +460,7 @@ function buildSections({
               };
             })
             .sort((a, b) => b.count - a.count).slice(0, 25);
-          return { featureBoard, degraded: true, degradedReason: e.message, clusteredNames, totalNames };
+          return { featureBoard, degraded: true, degradedReason: e.message, clusteredNames, totalNames, sourceChecks };
         }
       }
     },
@@ -571,7 +572,8 @@ function buildSections({
               topics: r.topics, subreddit: r.subreddit, permalink: r.permalink,
               title: r.title, week: r.week, kind: r.kind
             })),
-          ranking: 'recurrence across distinct threads — never Reddit engagement'
+          ranking: 'recurrence across distinct threads — never Reddit engagement',
+          sourceChecks: contributionHealth
         };
       }
     },
@@ -837,7 +839,7 @@ function buildSections({
 // Entry point
 // ---------------------------------------------------------------------------
 
-async function runRollup({ store, aoai, context, env = process.env, now = () => new Date(), fetchImpl = globalThis.fetch }) {
+async function runRollup({ store, aoai, context, env = process.env, now = () => new Date(), fetchImpl = globalThis.fetch, contributionHealth = null }) {
   const startedMs = Date.now();
   const rawRows = await store.listAnalyzedPosts();
   const { items: parsed, skipped: rowsSkipped } = parseRows(rawRows);
@@ -926,7 +928,7 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
 
   const sections = buildSections({
     rows, aiRows, humanRows, humanAiRows, nonHumanRows,
-    weeks, env, aoai, store, context, now, commentMentions, commentStats, excluder, registryHealth
+    weeks, env, aoai, store, context, now, commentMentions, commentStats, excluder, registryHealth, contributionHealth
   });
   const { results, written, failed, rowIssues } = await runSections(sections, {
     saveAggregate: (p, k, v) => store.saveAggregate(p, k, v),
@@ -939,6 +941,7 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
     sectionsWritten: written,
     sectionsFailed: failed,
     rowsScanned: rawRows.length,
+    contributionHealth,
     rowsAnalyzed: rows.length,
     rowsSkipped,
     // Corpus/pricing figures for the comment round. `commentCorpus.wouldSelect`
