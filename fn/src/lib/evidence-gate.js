@@ -3,6 +3,7 @@
 // One boundary for the strategy brief's actual inputs. No question-text
 // heuristics: custom questions share this pack and have no dependency map.
 const VERSION = 1;
+const { isReviewed } = require('./brief-review');
 const DEPENDENCIES = ['cohort', 'minbar', 'trust', 'features', 'distributions', 'personas', 'quotes'];
 
 function problem(value) {
@@ -45,7 +46,14 @@ function publishBrief(brief, evidence, registryHealth) {
       { section: 'brief', kind: 'cannot-execute', reason: 'No successful evidence-gate receipt; a new rollup is required.' }
     ] }, brief?.questions || []);
   }
-  return brief;
+  if (!isReviewed(brief)) {
+    const withheld = blockedBrief({ version: VERSION, status: 'blocked', blockedBy: [
+      { section: 'brief', kind: 'review-required', reason: 'This exact brief has no valid editorial review. Generated candidates are held for review.' }
+    ] }, brief?.questions || []);
+    withheld.degradedReason = 'Strategic answers are awaiting editorial review.';
+    return withheld;
+  }
+  return { ...brief, publicationNote: 'Reviewed snapshot from ' + brief.generatedAt + '. Other dashboard sections may contain newer aggregates.' };
 }
 
 function publishFeatures(features) {

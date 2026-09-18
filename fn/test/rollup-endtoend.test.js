@@ -96,7 +96,7 @@ test('a full run writes every section and reports a clean summary', async () => 
 
   // Not one of the 15 may come back null — the whole point of the round.
   for (const name of ALL_SECTIONS) {
-    const saved = store.saved.get(name);
+    const saved = store.saved.get(name === 'brief' ? 'brief-candidate' : name);
     assert.ok(saved, `${name} must be written`);
     assert.ok(saved.payload && typeof saved.payload === 'object', `${name} payload must be an object`);
     assert.strictEqual(saved.payload.error, undefined, `${name} must not be an error row`);
@@ -142,7 +142,7 @@ test('a storage failure on one section does not stop the other fifteen', async (
   // The other fifteen still landed — this is the regression that mattered.
   assert.strictEqual(summary.sectionsWritten.length, ALL_SECTIONS.length - 1);
   for (const name of ALL_SECTIONS.filter((n) => n !== 'distributions')) {
-    assert.ok(store.saved.get(name), `${name} must still be written`);
+    assert.ok(store.saved.get(name === 'brief' ? 'brief-candidate' : name), `${name} must still be written`);
   }
   // And distributions itself carries a named error rather than being absent.
   assert.strictEqual(store.saved.get('distributions').payload.error, 'PropertyValueTooLarge');
@@ -217,6 +217,6 @@ test('AOAI failure degrades the section instead of failing the run', async () =>
   // the dependent brief must block instead of recycling previous answers.
   assert.strictEqual(store.saved.get('features').payload.degraded, true);
   assert.strictEqual(store.saved.get('personas').payload._stale, true);
-  assert.strictEqual(store.saved.get('brief').payload.evidenceGate.status, 'blocked');
-  assert.deepStrictEqual(store.saved.get('brief').payload.answers, []);
+  assert.strictEqual(store.saved.get('brief-candidate').payload.evidenceGate.status, 'blocked');
+  assert.deepStrictEqual(store.saved.get('brief-candidate').payload.answers, []);
 });

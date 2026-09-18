@@ -89,3 +89,34 @@ On the same 990 successful records, quote fields changed 1,759 -> 1,797; explici
 The full private model preview completed all rollup sections in 152,105 ms after the 216,939 ms source preflight (about 369 seconds combined). Editorial review rejected earlier strategic previews that conflated negative stance with total rejection and modeled personas with measured audience segments. The corrected pack withholds illustrative quotes and persona shares/goals, enforces low confidence, and states unreviewed semantics and overlapping stance-basis categories. Source attribution does not prove a tooling requirement or population demand.
 
 Release validation: final candidate Linux suite has the same pre-existing duplicate-subreddit-list documentation assertion as predecessor; no new failure. Focused AOAI tests 12/12 pass. Private source replay found zero unexpected removals on the frozen union. Release remains limited to contribution filtering, reproducible feature coverage, evidence scope and UI labels; broad reanalysis is not promoted.
+# Reviewed-publication follow-up — 2026-09-18
+
+Resumption found the 13:05:05.425Z timer-generated brief had replaced the
+04:28 editorially reviewed release. Its evidence gate passed, but no editorial
+review marker existed and baseline labels were again described as minimum
+requirements. Live SHA remained c217cd9; daily analysis cap remained 20,000.
+
+This follow-up stages all generated brief payloads (including failures) under
+`brief-candidate/latest`, preserving the attended publication at `brief/latest`.
+The API requires an approved versioned editorial receipt whose SHA-256 binds the
+complete stored artifact. Changed answers, questions, confidence or generation
+time invalidate it. The hash is an integrity check, not authentication; Azure
+write permissions remain the authority boundary. Current degraded evidence
+still suppresses publication. The UI identifies the reviewed snapshot's date
+and warns that the surrounding aggregate boards may be newer.
+
+UI labels now distinguish analyzed rows, AI-related mentions, unvalidated
+baseline coding and extracted passages awaiting attribution review.
+
+Validation: 28 focused tests pass, including actual insights handlers, candidate
+staging, edited-artifact rejection, healthy reviewed control, degraded source
+rejection and section isolation. Dashboard inline scripts parse. Linux baseline
+comparison and deployment receipt follow after release validation.
+
+Semantic review is diagnostic, not independent human gold. The frozen pilot
+and 120-row panel hashes match the prior receipt. All 21 topic flips and three
+remaining bot-origin quotes were source-reviewed, and ten unavailable outputs
+remain explicit. No new model calls, automatic retries or production-analysis
+replacement. Other unmatched fields and panel/challenge semantic review remain
+open. This publication fix does not certify the corpus or authorize backlog
+enqueue. Private sources and identifiers are not included in this report.

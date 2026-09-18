@@ -756,6 +756,9 @@ function buildSections({
     },
     {
       name: 'brief',
+      // Timer and manual rollups stage candidates; only attended editorial
+      // publication may replace brief/latest. Failure rows are staged too.
+      partition: 'brief-candidate',
       build: async (results) => {
         const gate = evidenceGate.evaluate(results, registryHealth);
         if (gate.status === 'blocked') {
@@ -816,6 +819,7 @@ function buildSections({
           brief.generatedAt = now().toISOString();
           brief.excluded = excluded;
           brief.evidenceGate = gate;
+          delete brief.editorialReview;
           return brief;
         } catch (e) {
           context?.error?.(`strategy brief failed: ${e.message}`);
@@ -979,6 +983,7 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
     // filter was disabled for this run (quote-recurrence still ran).
     boilerplateRegistryHealth: registryHealth,
     briefEvidenceGate: results.brief?.evidenceGate || { version: evidenceGate.VERSION, status: 'blocked', blockedBy: [{ section: 'brief', kind: 'source-error', reason: 'Brief section failed.' }] },
+    briefPublication: { status: 'review-required', candidateGeneratedAt: results.brief?.generatedAt || null, destination: 'brief-candidate' },
     // §4.1: per-section item-exclusion totals, echoed here so the next reader
     // can see the filter ran without opening every section payload.
     boilerplateExcluded: {
