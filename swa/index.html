@@ -200,8 +200,8 @@
     </div>
 
     <section class="card">
-      <h2>Anti-AI cohort: loud minority or anxious majority?</h2>
-      <p class="sub">Three lenses — share of posts, share of distinct authors, and commenter stance (closest to the silent population) — plus why the negative stance is held. Tiles show the Reddit frame (population-representative); frames are never pooled.</p>
+      <h2>Negative AI stance in observed discussions</h2>
+      <p class="sub">Coded hostile/wary shares within AI-related rows, their authors, and sampled comments. This does not measure total rejection of AI or prevalence among all writers. Frames are never pooled.</p>
       <div class="tiles" id="cohortTiles"></div>
       <p class="sub" id="frameNote"></p>
       <div class="cols">
@@ -252,7 +252,7 @@
 
     <section class="card">
       <h2>Personas</h2>
-      <p class="sub">Synthesized from analyzed discussions; refreshed with each rollup. Quotes are verbatim from source posts.</p>
+      <p class="sub">Model-generated hypotheses for research, not measured audience segments. Goals and illustrations require source review.</p>
       <div class="personas" id="personas"></div>
     </section>
 
@@ -260,6 +260,7 @@
       <section class="card">
         <h2>Feature requests</h2>
         <p class="sub">Tooling people wish existed, normalized across phrasings, split AI / non-AI.</p>
+        <p class="sub" id="featureScope"></p>
         <h3 style="font-size:13px;margin:8px 0 2px;">AI-powered wishes</h3>
         <div id="featuresAi"></div>
         <h3 style="font-size:13px;margin:14px 0 2px;">Non-AI wishes</h3>
@@ -446,8 +447,12 @@ function render(data) {
   track(section('heatmap', ['#heatmap'], data.heatmap, renderHeatmap));
   track(section('stance', ['#stance'], data.stance, renderStance));
   track(section('personas', ['#personas'], data.personas, renderPersonas));
-  track(section('features', ['#featuresAi', '#features'], data.features, (f) => {
+  track(section('features', ['#featuresAi', '#features', '#featureScope'], data.features, (f) => {
     const board = f.featureBoard || [];
+    const coverage = f.coverage;
+    $('#featureScope').textContent = coverage
+      ? `${f.clusteredNames} selected mentions out of ${f.totalNames} eligible mentions; ${coverage.strata.filter(s => s.selected > 0).length} of ${coverage.strata.length} source/community/time groups covered. Balanced diagnostic sample, not a population ranking. Meanings remain unreviewed.`
+      : 'Selection coverage has not been recorded for this saved result.';
     renderBars('#featuresAi', board.filter((x) => x.aiRelated).map((x) => ({ name: x.feature, n: x.count, extra: x.examples })), true);
     renderBars('#features', board.filter((x) => !x.aiRelated).map((x) => ({ name: x.feature, n: x.count, extra: x.examples })), true);
   }));
@@ -555,10 +560,10 @@ function renderCohort(c) {
   if (!c) { $('#cohortTiles').innerHTML = '<p class="sub">No cohort data yet.</p>'; return; }
   const pct = (x) => (x * 100).toFixed(0) + '%';
   $('#cohortTiles').innerHTML = [
-    { v: pct(c.negPostShare || 0), l: 'of AI posts are hostile/wary (OPs)' },
+    { v: pct(c.negPostShare || 0), l: 'of AI-related rows are coded hostile/wary' },
     { v: pct(c.negAuthorShare || 0), l: 'of distinct authors lean negative' },
     { v: pct(c.negThreadShare || 0), l: 'of distinct threads carry a negative voice' },
-    { v: pct(c.hiIntensityNegShare || 0), l: 'of negative posts are max intensity' }
+    { v: pct(c.hiIntensityNegShare || 0), l: 'of negative rows are coded max intensity' }
   ].map((t) => `<div class="tile"><div class="v">${esc(t.v)}</div><div class="l">${esc(t.l)}</div></div>`).join('');
   renderBars('#basisBars', topN(c.basisCounts, 8));
   renderBars('#commentBars', topN(c.commentStanceTotals, 6));
@@ -574,7 +579,7 @@ function renderCohort(c) {
   const bits = [];
   for (const [name, f] of Object.entries(c.frames || {})) {
     if (name === 'reddit' || !f.aiPosts) continue;
-    bits.push(`${frameLabel(name)}: ${(f.negPostShare * 100).toFixed(0)}% negative OPs across ${f.aiPosts} posts`);
+    bits.push(`${frameLabel(name)}: ${(f.negPostShare * 100).toFixed(0)}% coded negative across ${f.aiPosts} AI-related rows`);
   }
   $('#frameNote').innerHTML = (bits.length
     ? `Comparison frames (never pooled into the tiles): ${esc(bits.join(' · '))}.`
@@ -721,7 +726,7 @@ function renderPersonas(p) {
     <div class="pcard">
       <h3>${esc(x.name)}</h3>
       <div class="arch">${esc(x.archetype)}</div>
-      <div class="share">~${Math.round(x.share_pct)}% of voices · stance: ${esc(x.stance_on_ai)}</div>
+      <div class="share">Model hypothesis · stance: ${esc(x.stance_on_ai)}</div>
       <ul>${(x.goals || []).slice(0, 3).map((g) => `<li>${esc(g)}</li>`).join('')}</ul>
       <ul style="border-left:2px solid var(--st-wary); list-style:none; padding-left:10px;">${(x.fears || []).slice(0, 3).map((f) => `<li>⚠ ${esc(f)}</li>`).join('')}</ul>
       <div class="win"><strong>What wins them:</strong> ${esc(x.what_would_win_them)}</div>
