@@ -24,6 +24,7 @@ const contentClass = require('./content-class');
 const boilerplateRegistry = require('./boilerplate-registry');
 const boilerplateFilter = require('./boilerplate-filter');
 const evidenceGate = require('./evidence-gate');
+const { selectFeatures } = require('./feature-sampling');
 
 // ---------------------------------------------------------------------------
 // Salience — corpus-derived, never engagement-derived (§3c)
@@ -410,21 +411,24 @@ function buildSections({
       build: async (_r, tally) => {
         const rawFeatures = [];
         forEachRow(humanRows, (r) => {
-          for (const f of r.features) {
-            rawFeatures.push({ name: f.feature, aiRelated: !!f.ai_related, quote: f.quote, permalink: r.permalink, subreddit: r.subreddit });
+          for (const [index, f] of r.features.entries()) {
+            rawFeatures.push({ partitionKey: r.subreddit, rowKey: `${r.id}|${index}`,
+              source: r.source, kind: r.kind, createdUtc: r.createdUtc,
+              value: { name: f.feature, aiRelated: !!f.ai_related, quote: f.quote, permalink: r.permalink, subreddit: r.subreddit } });
           }
         }, tally);
         const sourceChecks = contributionHealth;
         if (!rawFeatures.length) return { featureBoard: [], clusteredNames: 0, totalNames: 0, sourceChecks };
         const totalNames = rawFeatures.length;
+        const { selected, coverage } = selectFeatures(rawFeatures);
         // The cap stays (§4.2: do not raise it blind), but truncation is now
         // recorded rather than silent.
         const clusteredNames = Math.min(400, totalNames);
         try {
-          const { groups } = await aoai.normalizeFeatures(rawFeatures.map((f) => f.name).slice(0, 400));
+          const { groups } = await aoai.normalizeFeatures(selected.map((f) => f.name));
           const featureBoard = groups
             .map((g) => {
-              const members = g.members.map((i) => rawFeatures[i]).filter(Boolean);
+              const members = g.members.map((i) => selected[i]).filter(Boolean);
               const aiVotes = members.filter((m) => m.aiRelated).length;
               return {
                 feature: g.canonical,
@@ -435,7 +439,7 @@ function buildSections({
             })
             .sort((a, b) => b.count - a.count)
             .slice(0, 40);
-          return { featureBoard, clusteredNames, totalNames, sourceChecks };
+          return { featureBoard, clusteredNames, totalNames, sourceChecks, coverage };
         } catch (e) {
           // Degrade to raw counts rather than failing the section outright, but
           // preserve aiRelated by the same majority rule used in the primary
@@ -444,7 +448,7 @@ function buildSections({
           // ai_related flag was correct.
           context?.error?.(`feature normalization failed: ${e.message}`);
           const groupsByName = {};
-          for (const f of rawFeatures) {
+          for (const { value: f } of rawFeatures) {
             const key = String(f.name || '').toLowerCase().trim();
             if (!key) continue;
             (groupsByName[key] = groupsByName[key] || []).push(f);
@@ -460,7 +464,7 @@ function buildSections({
               };
             })
             .sort((a, b) => b.count - a.count).slice(0, 25);
-          return { featureBoard, degraded: true, degradedReason: e.message, clusteredNames, totalNames, sourceChecks };
+          return { featureBoard, degraded: true, degradedReason: e.message, clusteredNames, totalNames, sourceChecks, coverage };
         }
       }
     },
@@ -783,7 +787,10 @@ function buildSections({
             featureScope: {
               clusteredNames: results.features?.clusteredNames ?? null,
               totalNames: results.features?.totalNames ?? null,
-              note: 'Feature counts cover only the first selected entries in storage order. This is not a representative sample or a corpus-wide ranking; state this limitation in feature-related answers.'
+              selection: 'seeded source/community/post-comment/month coverage',
+              strataObserved: results.features?.coverage?.strata?.length ?? null,
+              strataCovered: results.features?.coverage?.strata?.filter(s => s.selected > 0).length ?? null,
+              note: 'Feature counts cover a balanced diagnostic sample across observed source/community/post-comment/month groups. It is not population-weighted or a corpus-wide ranking; state selected and eligible counts and this limitation.'
             },
             distributions: {
               stances: dist.stances || {},

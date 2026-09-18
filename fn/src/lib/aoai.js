@@ -418,7 +418,8 @@ evidence = short verbatim quotes from the pack. Never invent quotes or numbers.`
   const brief = await chatJson(system, user, 'strategy_brief', BRIEF_SCHEMA, 12000);
   const scope = pack.featureScope;
   if (Number.isInteger(scope?.clusteredNames) && Number.isInteger(scope?.totalNames)) {
-    const caveat = `The feature wishlist board covers ${scope.clusteredNames} selected entries out of ${scope.totalNames} feature mentions, in storage order; this is not a representative sample or a corpus-wide ranking. This cap does not apply to baseline, deal-breaker or trust counts.`;
+    const selection = scope.selection || 'storage order';
+    const caveat = `The feature wishlist board covers ${scope.clusteredNames} selected entries out of ${scope.totalNames} eligible feature mentions (${selection}); this is not a population-weighted sample or a corpus-wide ranking. This cap does not apply to baseline, deal-breaker or trust counts.`;
     for (const answer of brief.answers || []) answer.caveats = [answer.caveats, caveat].filter(Boolean).join(' ');
   }
   return brief;

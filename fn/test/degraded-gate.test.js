@@ -53,7 +53,7 @@ test('healthy control crosses the same synthesis boundary and publishes its answ
   assert.equal(r.calls[0].featureBoard.length, 1);
   assert.equal(r.calls[0].featureScope.clusteredNames, 1);
   assert.equal(r.calls[0].featureScope.totalNames, 1);
-  assert.match(r.calls[0].featureScope.note, /not a representative sample/);
+  assert.match(r.calls[0].featureScope.note, /not population-weighted/);
   assert.equal(r.calls[0].corpusScope.humanRows, 1);
   assert.match(r.calls[0].corpusScope.units, /not distinct posts or people/);
   assert.match(r.calls[0].cohortScope.units, /NOT a denominator/);
