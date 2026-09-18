@@ -51,6 +51,9 @@ test('healthy control crosses the same synthesis boundary and publishes its answ
   const r = await rollup();
   assert.equal(r.calls.length, 1);
   assert.equal(r.calls[0].featureBoard.length, 1);
+  assert.equal(r.calls[0].featureScope.clusteredNames, 1);
+  assert.equal(r.calls[0].featureScope.totalNames, 1);
+  assert.match(r.calls[0].featureScope.note, /not a representative sample/);
   assert.equal(r.calls[0].sampleQuotes.length, 1);
   assert.equal(r.saved.get('brief').evidenceGate.status, 'pass');
   assert.deepEqual(gate.publishBrief(r.saved.get('brief'), Object.fromEntries(r.saved), { degraded: false }).answers, oldAnswers);

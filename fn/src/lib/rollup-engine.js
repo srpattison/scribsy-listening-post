@@ -770,6 +770,11 @@ function buildSections({
             dbByKind: minbar.dbByKind || {},
             trustBoard: results.trust || {},
             featureBoard: ((results.features && results.features.featureBoard) || []).slice(0, 25),
+            featureScope: {
+              clusteredNames: results.features?.clusteredNames ?? null,
+              totalNames: results.features?.totalNames ?? null,
+              note: 'Feature counts cover only the first selected entries in storage order. This is not a representative sample or a corpus-wide ranking; state this limitation in feature-related answers.'
+            },
             distributions: {
               stances: dist.stances || {},
               stancesBySource: dist.stancesBySource || {},
