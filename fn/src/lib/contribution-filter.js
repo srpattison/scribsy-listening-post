@@ -69,10 +69,12 @@ async function prepareContributions(rows, store, registry, { concurrency = 16 } 
 // preserving the last successful rollup. The engine also remains available as
 // a pure aggregation entry point for same-input replay and unit tests.
 async function runSourceCheckedRollup(options) {
+  const startedMs = Date.now();
   const { store } = options;
   const rows = await store.listAnalyzedPosts();
   const registry = await require('./boilerplate-filter').loadRegistryForSubs(store, rows.map(row => row.partitionKey));
   const result = await prepareContributions(rows, store, registry);
+  result.health.preflightDurationMs = Date.now() - startedMs;
   if (result.health.degraded) throw new Error(`Contribution preflight failed: ${result.health.unavailableRows} source rows unavailable; no aggregates written.`);
   return require('./rollup-engine').runRollup({ ...options, contributionHealth: result.health,
     store: { ...store, listAnalyzedPosts: async () => result.rows } });

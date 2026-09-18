@@ -992,6 +992,7 @@ async function runRollup({ store, aoai, context, env = process.env, now = () => 
       ])
     },
     durationMs: Date.now() - startedMs,
+    totalDurationMs: Date.now() - startedMs + (contributionHealth?.preflightDurationMs || 0),
     finishedAt: now().toISOString()
   };
 
