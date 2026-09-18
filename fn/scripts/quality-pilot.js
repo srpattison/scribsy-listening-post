@@ -13,10 +13,8 @@ async function main() {
   if (!relative || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative))) throw new Error('Output must be outside repository');
   if (fs.existsSync(out)) throw new Error('Output already exists; refusing to overwrite pilot evidence');
   const archive = JSON.parse(fs.readFileSync(archivePath, 'utf8'));
-  const rows = archive.pilotRows;
+  const rows = require('../src/lib/frozen-pilot').frozenPilotRows(archive);
   const q = require('../src/lib/quality-benchmark');
-  if (!Array.isArray(rows) || rows.length !== 1000 ||
-      q.digest(rows.map(q.identity).join('\n')) !== archive.manifest.pilot.selectionHash) throw new Error('Frozen 1000-row pilot manifest mismatch');
   for (const setting of JSON.parse(fs.readFileSync(settingsPath, 'utf8'))) process.env[setting.name] = setting.value;
   fs.mkdirSync(out, { recursive: true, mode: 0o700 });
   const store = require('../src/lib/store'), aoai = require('../src/lib/aoai');
