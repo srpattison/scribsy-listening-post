@@ -764,6 +764,14 @@ function buildSections({
         const excluded = boilerplateFilter.combineExcluded([minbar.excluded, results.trust && results.trust.excluded, dist.excluded]);
         try {
           const brief = await aoai.strategyBrief({
+            corpusScope: {
+              humanRows: results.meta?.totalPosts ?? null,
+              humanAiRows: results.meta?.aiRelated ?? null,
+              units: 'Rows include submissions and separately analyzed comments. Baseline, deal-breaker, trust and feature counts are item mentions, not distinct posts or people. Do not divide them by corpus rows or cohort.commentedPosts or label them as percentages of writers.'
+            },
+            cohortScope: {
+              units: 'Each cohort frame covers its own AI-related human rows. aiPosts counts those rows; distinctAuthors counts their authors; commentedPosts counts rows with comment-stance data and is NOT a denominator for any mention board. basisCounts is multi-label stance coding of rows, not comments. Only commentStanceTotals counts sampled comment stances. Shares are stored ratios on their named denominators, not population prevalence.'
+            },
             cohort: results.cohort || {},
             baselineTop: Object.entries(minbar.baselineCounts || {}).sort((a, b) => b[1] - a[1]).slice(0, 25),
             dealBreakerBoard: (minbar.dealBreakerBoard || []).slice(0, 20),
