@@ -28,3 +28,17 @@ Both reproduced before this change; neither path changed. Initial environment-on
 This is containment, not corpus validation or quote-level repair. It does not certify healthy-looking feature rankings or fix recurrence coverage, attribution, first-400 selection, or backlog enqueue. Those remain separate work.
 
 Production rollout requires publishing both fn and swa from the reviewed commit while preserving live Azure settings. This machine has no Azure CLI login; Chrome Cloud Shell currently requires sign-in. No production merge or deployment is claimed. Verify /api/ping deployedSha plus authenticated insights all/brief/features after publication. Legacy briefs must immediately be unavailable until a successfully gated rollup runs. Do not enqueue backlog or trigger reanalysis for this verification.
+
+## Feature recovery follow-up (2026-09-17)
+
+The preceding containment round shipped in PR #6, merge 467449a, with live API/UI withholding verified. Steven then authorized diagnosis, correction and one controlled manual rollup. Recovery brief: https://app.notion.com/p/3de103cbb30381ee877cf43d1f562c18.
+
+Live feature-only replays used the existing first-400 input (386 distinct names, 14,793 prompt characters, 48,836 total feature rows). No aggregates were written by these probes.
+
+- Baseline gpt-5-mini-2025-08-07: HTTP 200, finish=length, 6,000 completion tokens, all 6,000 reasoning, zero content. This establishes token exhaustion rather than refusal.
+- Lower effort with the same 6,000 cap: finish=stop, 1,727 completion / 896 reasoning, but all 400 names collapsed into one group. Rejected on semantic quality; not shipped.
+- Normal effort with a 16,000 cap: finish=stop, 9,852 completion / 4,416 reasoning, 399 singleton groups and one omitted input. Rejected on coverage; not shipped as-is.
+
+The candidate keeps normal reasoning and a feature-only 16,000 cap, deterministically combines exact names, and requests only near-equivalent merges. Unmentioned inputs deliberately retain their own names and original row indexes. It validates disjoint in-range merge membership. An incomplete/refused/empty model response still throws and activates containment; no silent fallback or retry is added. Oversized prompts fail explicitly rather than clipping away inputs. Errors expose only allowlisted finish reasons and numeric usage counts.
+
+Nine REST-boundary tests cover failure diagnostics, parseable-but-incomplete replies, refusal, successful output, invalid membership, oversized input, and exact preservation under sparse merges. Full local suite: 241/243, same config-list and CAS baseline failures as the containment round. Actual sparse-merge replay and live regeneration are pending at this candidate commit; final operational receipts belong in the linked brief. No token/model settings for post analysis or other synthesis calls changed. The first-400 selection and broader quote-quality repair remain separate limitations, not certified by this change.
