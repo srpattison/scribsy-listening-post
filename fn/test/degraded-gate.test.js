@@ -40,14 +40,14 @@ test('normalization failure blocks the real synthesis boundary, including altern
   const r = await rollup({ degraded: true });
   assert.equal(r.calls.length, 0, 'neither featureBoard nor sampleQuotes may enter synthesis');
   assert.equal(r.previousBriefReads, 0);
-  assert.deepEqual(r.saved.get('brief').answers, []);
+  assert.deepEqual(r.saved.get('brief-candidate').answers, []);
   assert.equal(r.summary.briefEvidenceGate.status, 'blocked');
-  assert.ok(r.saved.get('brief').evidenceGate.blockedBy.some(b => b.section === 'features' && b.kind === 'cannot-execute'));
+  assert.ok(r.saved.get('brief-candidate').evidenceGate.blockedBy.some(b => b.section === 'features' && b.kind === 'cannot-execute'));
   assert.ok(r.saved.get('features').featureBoard.length, 'diagnostic fallback retained in storage');
   assert.ok(r.saved.has('snapshot'), 'unrelated sections still finish');
 });
 
-test('healthy control crosses the same synthesis boundary and publishes its answers', async () => {
+test('healthy synthesis stages its answers and preserves the previous publication', async () => {
   const r = await rollup();
   assert.equal(r.calls.length, 1);
   assert.equal(r.calls[0].featureBoard.length, 1);
@@ -63,20 +63,22 @@ test('healthy control crosses the same synthesis boundary and publishes its answ
   assert.equal(r.calls[0].personas.length, 1);
   assert.equal(r.calls[0].personas[0].archetype, 'curious');
   assert.ok(r.calls[0].personas.every(p => !('share_pct' in p) && !('goals' in p)));
-  assert.equal(r.saved.get('brief').evidenceGate.status, 'pass');
-  assert.deepEqual(gate.publishBrief(r.saved.get('brief'), Object.fromEntries(r.saved), { degraded: false }).answers, oldAnswers);
+  assert.equal(r.saved.get('brief-candidate').evidenceGate.status, 'pass');
+  assert.deepEqual(gate.publishBrief(r.saved.get('brief-candidate'), Object.fromEntries(r.saved), { degraded: false }).answers, []);
+  assert.deepEqual(r.saved.get('brief'), { answers: oldAnswers });
+  assert.equal(r.summary.briefPublication.status, 'review-required');
 });
 
 test('registry failure is cannot-execute and cannot silently feed synthesis', async () => {
   const r = await rollup({ registryFails: true });
   assert.equal(r.calls.length, 0);
   assert.equal(r.summary.briefEvidenceGate.status, 'blocked');
-  assert.equal(r.saved.get('brief').evidenceGate.blockedBy[0].section, 'boilerplateRegistry');
+  assert.equal(r.saved.get('brief-candidate').evidenceGate.blockedBy[0].section, 'boilerplateRegistry');
 });
 
 test('a synthesis outage cannot resurrect an unstamped pre-fix brief', async () => {
   const r = await rollup({ synthesisFails: true });
-  assert.deepEqual(r.saved.get('brief').answers, []);
+  assert.deepEqual(r.saved.get('brief-candidate').answers, []);
 });
 
 test('missing, stale, degraded, truncated and real source errors remain distinguishable', () => {
@@ -127,6 +129,9 @@ test('actual insights all/brief/features routes contain old stored data before a
 
 test('actual insights route suppresses legacy briefs, fails closed on read error, and allows healthy receipt', async () => {
   const r = await rollup();
+  const candidate = r.saved.get('brief-candidate');
+  candidate.editorialReview = { version: 1, status: 'approved', reviewer: 'test reviewer', reviewedAt: '2026-09-18T00:00:00Z', contentHash: require('../src/lib/brief-review').contentHash(candidate) };
+  r.saved.set('brief', candidate);
   assert.equal((await insightsHandler(r.saved)('brief')).jsonBody.answers.length, 1);
   assert.equal((await insightsHandler(r.saved, 'features')('brief')).jsonBody.answers.length, 0);
   r.saved.set('brief', { answers: oldAnswers });

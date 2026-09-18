@@ -158,7 +158,7 @@
 
     <section class="card">
       <h2>Strategic answers</h2>
-      <p class="sub">Standing research questions, re-answered from the full corpus at every rollup. Confidence and caveats are the model's own, grounded in the aggregates below.</p>
+      <p class="sub">Editorially reviewed answers from a dated evidence snapshot. New generated answers are held for review. Semantic labels remain unvalidated; confidence stays low.</p>
       <div id="brief"></div>
     </section>
 
@@ -220,7 +220,7 @@
       <section class="card">
         <h2>Minimum bar &amp; deal-breakers</h2>
         <p class="sub">What writers treat as table stakes, and what makes them walk.</p>
-        <h3 style="font-size:13px;margin:8px 0 2px;">Expected baseline</h3>
+        <h3 style="font-size:13px;margin:8px 0 2px;">Coded baseline mentions — requirements unvalidated</h3>
         <div id="baseline"></div>
         <h3 style="font-size:13px;margin:14px 0 2px;">Deal-breakers</h3>
         <div id="dealbreakers"></div>
@@ -261,7 +261,7 @@
         <h2>Feature requests</h2>
         <p class="sub">Tooling people wish existed, normalized across phrasings, split AI / non-AI.</p>
         <p class="sub" id="featureScope"></p>
-        <h3 style="font-size:13px;margin:8px 0 2px;">AI-powered wishes</h3>
+        <h3 style="font-size:13px;margin:8px 0 2px;">AI-related feature mentions</h3>
         <div id="featuresAi"></div>
         <h3 style="font-size:13px;margin:14px 0 2px;">Non-AI wishes</h3>
         <div id="features"></div>
@@ -278,7 +278,7 @@
 
     <section class="card">
       <h2>Quote explorer</h2>
-      <p class="sub">Verbatim voices from the threads. Every quote links to its source.</p>
+      <p class="sub">Extracted passages linked to source threads. Exact wording, speaker attribution and meaning require review.</p>
       <div class="filters">
         <select id="fTopic"><option value="">All topics</option></select>
         <select id="fStance"><option value="">All stances</option></select>
@@ -326,7 +326,7 @@ async function load() {
   if (!base || !key) { $('#setup').hidden = false; return; }
   $('#setupErr').textContent = '';
   try {
-    const res = await fetch(`${base}/api/insights?view=all&code=${encodeURIComponent(key)}`);
+    const res = await fetch(`${base}/api/insights?view=all`, { headers: { 'x-functions-key': key } });
     if (!res.ok) throw new Error(`API ${res.status}`);
     const data = await res.json();
     window.__data = data;
@@ -477,7 +477,7 @@ function renderBrief(brief) {
       ${a.caveats ? `<div class="cav">Caveats: ${esc(a.caveats)}</div>` : ''}
       ${(a.evidence || []).slice(0, 3).map((e) => `<div class="ev">“${esc(e)}”</div>`).join('')}
     </div>`).join('') || '<p class="sub">No brief yet — runs with the first rollup.</p>';
-  $('#brief').insertAdjacentHTML('afterbegin', staleNote(brief));
+  $('#brief').insertAdjacentHTML('afterbegin', (brief.publicationNote ? `<p class="sub">${esc(brief.publicationNote)}</p>` : '') + staleNote(brief));
 }
 
 function renderSignals(s) {
@@ -639,7 +639,7 @@ function renderTiles(meta, data) {
   const topStance = Object.entries(stances).sort((a, b) => b[1] - a[1])[0];
   const pct = meta.totalPosts ? Math.round((meta.aiRelated / meta.totalPosts) * 100) : 0;
   $('#tiles').innerHTML = [
-    { v: (meta.totalPosts ?? 0).toLocaleString(), l: 'posts analyzed' },
+    { v: (meta.totalPosts ?? 0).toLocaleString(), l: 'rows analyzed (posts + comments)' },
     { v: pct + '%', l: 'discuss AI in writing' },
     { v: (meta.subreddits || []).length, l: 'communities & streams tracked' },
     { v: topStance ? topStance[0] : '—', l: 'most common stance' }

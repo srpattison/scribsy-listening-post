@@ -114,7 +114,7 @@ test('registry-recorded item text is excluded from every affected board; a genui
 
   const minbar = store.saved.get('minbar').payload;
   const trust = store.saved.get('trust').payload;
-  const brief = store.saved.get('brief').payload;
+  const brief = store.saved.get('brief-candidate').payload;
 
   // --- (a) absent from the top-10 of every affected board ---
   const dbTop10 = minbar.dealBreakerBoard.slice(0, 10).map((d) => d.item);
