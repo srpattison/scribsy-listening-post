@@ -187,6 +187,16 @@ row (`analysisJson.grounding`). This checks grounding only, not meaning.
 private review fixtures (`LP_PRIVATE_DIR`, outside the repo; counts only), and
 `scripts/public-data-guard.js` checks a staged diff against them before commit.
 
+**Bounded replay (CB-LISTEN-REPLAY-1).** `scripts/quality-pilot.js` replays the
+frozen 1,000-row pilot by default. With `--ids=<path>` it replays only the
+listed `partitionKey|rowKey` identities, in list order, from the archive's
+`pilotRows`: a hard ceiling of 50 rows (`--max-rows=<n>` may only lower it), an
+unknown ID fails before any spend, and there is no fallback to the full pilot.
+The ID file must live outside the repo; `scripts/replay-ids.js` builds it into
+`$LP_PRIVATE_DIR/out/replay-ids.json`. Resume with `--resume` and the same list.
+`scripts/replay-summary.js <pilot.private.json>` prints old-versus-new counts
+only.
+
 `view=health` reports `filteredCommentsLast24h` broken down by reason, and each
 analysed row records `botCommentsFiltered` / `botCommentsFilterReasons`. Without
 that, "filtering works" and "no bot comments were present" are indistinguishable
