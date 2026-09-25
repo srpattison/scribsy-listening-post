@@ -17,7 +17,7 @@
 // that section's own row, and the run continues. A section that depends on an
 // earlier one reads it from `results` and must tolerate it being missing.
 
-const { TOPICS, PILLAR_SIGNALS, COMPETITOR_ALIASES } = require('./taxonomy');
+const { TOPICS, PILLAR_SIGNALS, COMPETITOR_ALIASES, FEATURE_BASIS } = require('./taxonomy');
 const config = require('./config');
 const commentPolicy = require('./comment-policy');
 const contentClass = require('./content-class');
@@ -73,6 +73,13 @@ const bySalience = (index) => (a, b) =>
 // ---------------------------------------------------------------------------
 // Row parsing — per-row isolation (§4.2)
 // ---------------------------------------------------------------------------
+
+// Per-entry basis breakdown for a feature-board entry's members.
+function basisOf(members) {
+  const out = {};
+  for (const m of members) out[m.basis] = (out[m.basis] || 0) + 1;
+  return out;
+}
 
 // pain_points / expected_baseline / ethics_concerns are grounded objects
 // { item, quote, speaker } from schema v4 (CB-LISTEN-FIX-1) and plain strings
@@ -419,16 +426,26 @@ function buildSections({
     {
       name: 'features',
       build: async (_r, tally) => {
-        const rawFeatures = [];
+        // `basis` is never pooled by accident (CB-LISTEN-FIX-1b R1, founder
+        // ruling 2026-09-24). The board carries explicit requests and implied
+        // needs; existing-tool usage is counted on its own. Pre-v4 items have
+        // no basis and are labelled `legacy` — never guessed — and stay on the
+        // board so it does not empty out before the corpus is reanalysed.
+        const allFeatures = [];
         forEachRow(humanRows, (r) => {
           for (const [index, f] of r.features.entries()) {
-            rawFeatures.push({ partitionKey: r.subreddit, rowKey: `${r.id}|${index}`,
+            const basis = FEATURE_BASIS.includes(f.basis) ? f.basis : 'legacy';
+            allFeatures.push({ partitionKey: r.subreddit, rowKey: `${r.id}|${index}`,
               source: r.source, kind: r.kind, createdUtc: r.createdUtc,
-              value: { name: f.feature, aiRelated: !!f.ai_related, quote: f.quote, permalink: r.permalink, subreddit: r.subreddit } });
+              value: { name: f.feature, aiRelated: !!f.ai_related, basis, quote: f.quote, permalink: r.permalink, subreddit: r.subreddit } });
           }
         }, tally);
+        const basisCounts = { explicit_request: 0, implied_need: 0, existing_usage: 0, legacy: 0 };
+        for (const f of allFeatures) basisCounts[f.value.basis]++;
+        const rawFeatures = allFeatures.filter((f) => f.value.basis !== 'existing_usage');
+        const existingUsage = { count: basisCounts.existing_usage };
         const sourceChecks = contributionHealth;
-        if (!rawFeatures.length) return { featureBoard: [], clusteredNames: 0, totalNames: 0, sourceChecks };
+        if (!rawFeatures.length) return { featureBoard: [], clusteredNames: 0, totalNames: 0, sourceChecks, basisCounts, existingUsage };
         const totalNames = rawFeatures.length;
         const { selected, coverage } = selectFeatures(rawFeatures);
         // The cap stays (§4.2: do not raise it blind), but truncation is now
@@ -444,12 +461,13 @@ function buildSections({
                 feature: g.canonical,
                 count: g.members.length,
                 aiRelated: aiVotes * 2 >= members.length && members.length > 0,
+                byBasis: basisOf(members),
                 examples: members.slice(0, 3)
               };
             })
             .sort((a, b) => b.count - a.count)
             .slice(0, 40);
-          return { featureBoard, clusteredNames, totalNames, sourceChecks, coverage };
+          return { featureBoard, clusteredNames, totalNames, sourceChecks, coverage, basisCounts, existingUsage };
         } catch (e) {
           // Degrade to raw counts rather than failing the section outright, but
           // preserve aiRelated by the same majority rule used in the primary
@@ -470,11 +488,12 @@ function buildSections({
                 feature,
                 count: members.length,
                 aiRelated: aiVotes * 2 >= members.length && members.length > 0,
+                byBasis: basisOf(members),
                 examples: members.slice(0, 3)
               };
             })
             .sort((a, b) => b.count - a.count).slice(0, 25);
-          return { featureBoard, degraded: true, degradedReason: e.message, clusteredNames, totalNames, sourceChecks, coverage };
+          return { featureBoard, degraded: true, degradedReason: e.message, clusteredNames, totalNames, sourceChecks, coverage, basisCounts, existingUsage };
         }
       }
     },
@@ -809,6 +828,8 @@ function buildSections({
               units: 'totalNames counts eligible item mentions including repeats, not unique capabilities or dictionary entries. clusteredNames counts sampled mentions.',
               strataObserved: results.features?.coverage?.strata?.length ?? null,
               strataCovered: results.features?.coverage?.strata?.filter(s => s.selected > 0).length ?? null,
+              basisCounts: results.features?.basisCounts ?? null,
+              basisNote: 'featureBoard holds explicit_request, implied_need and legacy (pre-basis, unlabelled) mentions. existing_usage mentions are counted in basisCounts only and never ranked on the board.',
               note: 'Feature counts cover a balanced diagnostic sample across observed source/community/post-comment/month groups. It is not population-weighted or a corpus-wide ranking; state selected and eligible counts and this limitation.'
             },
             distributions: {

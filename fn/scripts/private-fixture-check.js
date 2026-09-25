@@ -14,8 +14,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { classifyComment } = require('../src/lib/comment-filter');
+const { classifyComment, roleHintOf } = require('../src/lib/comment-filter');
 const { normalizeForMatch } = require('../src/lib/grounding-validator');
+const cc = require('../src/lib/content-class');
+const boilerplateRegistry = require('../src/lib/boilerplate-registry');
+const boilerplateFilter = require('../src/lib/boilerplate-filter');
 
 const FILES = {
   starter: 'semantic-review-20260919-v2-starter.json',
@@ -208,10 +211,105 @@ function run() {
     result.corpora.pilotRaw = { records: pilot.json.review.length, unavailable, units, excludedUnits, excludedAtBaseline, stored: tally };
   }
 
+  if (pilot && Array.isArray(pilot.json.review)) result.repetitionGuard = repetitionGuard(pilot.json, packet && packet.json);
+
   console.log(JSON.stringify(result, null, 2));
   const outDir = path.join(dir, 'out');
   fs.mkdirSync(outDir, { recursive: true });
   fs.writeFileSync(path.join(outDir, 'private-fixture-check.json'), JSON.stringify(result, null, 2));
+}
+
+// ---- repetition guard (CB-LISTEN-FIX-1b item 6) ----------------------------
+//
+// What the two repetition-derived exclusions actually remove, split by the
+// derived role of the source unit: `ordinary` (no mod/bot role) versus
+// `mod/bot`. An ordinary-role count is the number that matters — it is the
+// only place repetition could be suppressing genuine opinion.
+const roleClass = (unit) => (roleHintOf(unit) === 'ordinary-or-unknown' ? 'ordinary' : 'mod/bot');
+
+function repetitionGuard(pilotJson, packetJson) {
+  const out = {};
+
+  // (a) Live registry, as recorded: the archive's quote checks were run with
+  // the production registry (registryAvailable), and name the source unit.
+  const live = { quoteMatches: { ordinary: 0, 'mod/bot': 0 }, distinctUnits: { ordinary: 0, 'mod/bot': 0 }, recordsWithRegistry: 0 };
+  for (const rec of pilotJson.review || []) {
+    if (!rec.raw || !Array.isArray(rec.checks)) continue;
+    if (rec.registryAvailable) live.recordsWithRegistry++;
+    const seen = new Set();
+    for (const check of rec.checks) {
+      for (const m of check.matches || []) {
+        if (m.reason !== 'registry-hash') continue;
+        const unit = m.origin === 'context-comment' ? (rec.raw.comments || [])[m.index] : rec.raw.post;
+        const role = roleClass(unit || {});
+        live.quoteMatches[role]++;
+        const key = `${m.origin}|${m.index ?? 'post'}`;
+        if (!seen.has(key)) { seen.add(key); live.distinctUnits[role]++; }
+      }
+    }
+  }
+  out.registryHashLiveRecorded = live;
+
+  // (b) Registry rebuilt from the fixture units alone, with the production
+  // rule (normalised body ≥ 120 chars, > 5 repeats within one subreddit).
+  // The fixtures are a small slice of the corpus, so this is a floor on what
+  // the corpus-wide registry would match, not an estimate of it.
+  const rebuild = (units) => {
+    const index = cc.buildRepeatIndex(units.map((u) => ({ subreddit: u.sub, title: '', body: u.body })));
+    const reg = boilerplateRegistry.fromRepeatIndex(index, { minRepeats: cc.DEFAULT_MIN_REPEATS });
+    const counts = { ordinary: 0, 'mod/bot': 0 };
+    for (const u of units) {
+      const hash = cc.hashIfEligible(u.body, cc.DEFAULT_MIN_CHARS);
+      if (hash && reg[u.sub] && reg[u.sub][hash]) counts[roleClass(u.unit)]++;
+    }
+    return { units: units.length, registeredHashes: Object.values(reg).reduce((n, h) => n + Object.keys(h).length, 0), excluded: counts };
+  };
+  const pilotUnits = [];
+  for (const rec of pilotJson.review || []) {
+    if (!rec.raw) continue;
+    const sub = String(rec.row && rec.row.partitionKey || '').toLowerCase();
+    for (const c of rec.raw.comments || []) pilotUnits.push({ sub, body: c.body || '', unit: c });
+  }
+  out.registryHashRebuiltPilot = rebuild(pilotUnits);
+  if (packetJson) {
+    // Packet sources carry no subreddit: pooled into one bucket, which can
+    // only over-count repeats (an upper bound for this slice).
+    const packetUnits = [];
+    for (const c of packetJson.cases || []) {
+      if (!c || !c.source) continue;
+      for (const u of c.source.comments || []) packetUnits.push({ sub: 'pooled', body: u.text || '', unit: { roleHint: u.roleHint } });
+    }
+    out.registryHashRebuiltPacketPooled = rebuild(packetUnits);
+  }
+
+  // (c) Rollup quote-recurrence (boilerplate-filter: a deal-breaker/trust quote
+  // on > 5 distinct permalinks in one subreddit), over the pilot rows' stored
+  // analyses. Role comes from the quote's source unit where the raw record is
+  // in the archive; otherwise `no-raw`.
+  const rawById = new Map((pilotJson.review || []).filter((r) => r.raw && r.row)
+    .map((r) => [`${r.row.partitionKey}|${r.row.rowKey}`, r.raw]));
+  const rows = [];
+  for (const r of pilotJson.pilotRows || []) {
+    let a; try { a = JSON.parse(r.analysisJson); } catch { continue; }
+    rows.push({ key: `${r.partitionKey}|${r.rowKey}`, subreddit: r.partitionKey, permalink: r.permalink,
+      dealBreakers: a.deal_breakers || [], trustSignals: a.trust_signals || [] });
+  }
+  const qIndex = boilerplateFilter.buildQuoteRecurrenceIndex(rows);
+  const recurrence = { rows: rows.length, excludedItems: { ordinary: 0, 'mod/bot': 0, 'no-raw': 0, 'source-not-found': 0 } };
+  for (const r of rows) {
+    for (const item of [...r.dealBreakers, ...r.trustSignals]) {
+      if (!item || !item.quote || !boilerplateFilter.isRecurringQuote(qIndex, r.subreddit, item.quote)) continue;
+      const raw = rawById.get(r.key);
+      if (!raw) { recurrence.excludedItems['no-raw']++; continue; }
+      const q = normalizeForMatch(item.quote);
+      const units = [{ ...raw.post, body: `${raw.post.title || ''}
+${raw.post.selftext || ''}` }, ...(raw.comments || [])];
+      const src = units.find((u) => normalizeForMatch(u.body || '').includes(q));
+      recurrence.excludedItems[src ? roleClass(src) : 'source-not-found']++;
+    }
+  }
+  out.quoteRecurrencePilot = recurrence;
+  return out;
 }
 
 if (require.main === module) run();

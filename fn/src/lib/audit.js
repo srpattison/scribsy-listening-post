@@ -26,6 +26,7 @@
 const cc = require('./content-class');
 const config = require('./config');
 const { classifyComment } = require('./comment-filter');
+const { quoteEntries } = require('./grounding-validator');
 const { kindOf, idFromRowKey } = require('./rowkeys');
 
 // §8d: "under a minimum length" — stated explicitly per the brief's own
@@ -109,16 +110,9 @@ function isEmptyOrRemoved(text) {
 
 // Every verbatim-quote field in the analysis schema, as a getter over a
 // parsed analysisJson object.
+// Includes the v4 quote fields (CB-LISTEN-FIX-1b R4).
 function quoteFieldsOf(analysis) {
-  if (!analysis || typeof analysis !== 'object') return [];
-  const out = [];
-  if (analysis.notable_quote) out.push({ field: 'notable_quote', quote: analysis.notable_quote });
-  for (const [field, key] of [['deal_breakers', 'quote'], ['trust_signals', 'quote'], ['feature_requests', 'quote']]) {
-    for (const item of analysis[field] || []) {
-      if (item && item[key]) out.push({ field, quote: item[key] });
-    }
-  }
-  return out;
+  return quoteEntries(analysis).map(({ field, quote }) => ({ field, quote }));
 }
 
 // Classify one quote against its own row's source text. `humanBodies` /

@@ -16,6 +16,7 @@
 // its quote. Semantic checks are out of scope (model-free by design).
 
 const { FEATURE_BASIS } = require('./taxonomy');
+const { promptView } = require('./prompt-view');
 
 // Normalisation: case, whitespace, Markdown links/emphasis/blockquote markers,
 // backslash and HTML escapes, curly quotes. Applied identically to the quote
@@ -45,11 +46,13 @@ function parseSpeaker(speaker) {
 }
 
 // Build the unit texts exactly as the model saw them: the post (title + body)
-// and the prompt comments in prompt order.
+// and the prompt comments in prompt order, both cut where the prompt cuts them
+// (CB-LISTEN-FIX-1b R3). A quote from past the cut was never shown.
 function unitsFor(post, comments) {
+  const view = promptView(post || {}, (comments || []).map((c) => ({ body: (c && c.body) || '' })));
   return {
-    post: normalizeForMatch(`${(post && post.title) || ''}\n${(post && post.selftext) || ''}`),
-    comments: (comments || []).map((c) => normalizeForMatch((c && c.body) || ''))
+    post: normalizeForMatch(`${view.title}\n${view.visibleSelftext}`),
+    comments: view.visibleComments.map(normalizeForMatch)
   };
 }
 
@@ -139,4 +142,29 @@ function validateAnalysis(analysis, { post, comments } = {}) {
   return { analysis: out, drops, dropReasons, checked };
 }
 
-module.exports = { validateAnalysis, normalizeForMatch, parseSpeaker, LIST_FIELDS };
+// Every v4 quote location, for the audit readers (CB-LISTEN-FIX-1b R4):
+// [field, quote] pairs from notable_quote, every list item, and persona.goal.
+// Legacy rows simply yield fewer (their extra list items are bare strings).
+function quoteEntries(analysis) {
+  if (!analysis || typeof analysis !== 'object') return [];
+  const out = [];
+  if (typeof analysis.notable_quote === 'string' && analysis.notable_quote.trim()) {
+    out.push({ field: 'notable_quote', quote: analysis.notable_quote });
+  }
+  for (const field of QUOTE_LIST_FIELDS) {
+    if (!Array.isArray(analysis[field])) continue;
+    analysis[field].forEach((item, index) => {
+      if (item && typeof item.quote === 'string' && item.quote.trim()) out.push({ field, index, quote: item.quote });
+    });
+  }
+  const goal = analysis.persona && analysis.persona.goal_quote;
+  if (typeof goal === 'string' && goal.trim()) out.push({ field: 'persona.goal', quote: goal });
+  return out;
+}
+
+// Legacy readers listed these three first; order kept so existing audit
+// output does not reshuffle.
+const QUOTE_LIST_FIELDS = ['feature_requests', 'deal_breakers', 'trust_signals',
+  'pain_points', 'expected_baseline', 'ethics_concerns', 'tools_mentioned'];
+
+module.exports = { validateAnalysis, normalizeForMatch, parseSpeaker, quoteEntries, LIST_FIELDS, QUOTE_LIST_FIELDS };

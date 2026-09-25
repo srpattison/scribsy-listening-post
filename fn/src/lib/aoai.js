@@ -11,6 +11,7 @@
 
 const { TOPICS, STANCES, EXPERIENCE, STANCE_BASIS, DEALBREAKER_KINDS, FEATURE_BASIS } = require('./taxonomy');
 const provenance = require('./analysis-provenance');
+const { promptView } = require('./prompt-view');
 
 // Single source for the chat deployment in force — used by cfg() for the
 // request and by analyzePost for the analysisModel provenance stamp, so the
@@ -215,13 +216,10 @@ function analysisPromptVersion() {
 // quote that comment (§4).
 async function analyzePost(post, comments, deps = {}) {
   const chat = deps.chat || chatJson;
-  // Engagement counts are deliberately NOT in the prompt. They are an Arctic
-  // Shift capture-time snapshot with variable per-row lag, so showing them to
-  // the model invites it to reason from what is mostly archiver timing (§3c).
-  const commentBlock = comments
-    .map((c, i) => `[comment ${i + 1}] ${c.body}`)
-    .join('\n')
-    .slice(0, 8000);
+  // Truncation lives in lib/prompt-view.js, shared with the grounding
+  // validator, so the validator checks exactly the text the model saw.
+  const view = promptView(post, comments);
+  const commentBlock = view.commentBlock;
   const kindLabel = post.kind === 'comment' ? 'COMMENT' : 'POST';
   const src = post.source === 'bluesky'
     ? `BLUESKY (query stream: ${post.subreddit})`
@@ -229,7 +227,7 @@ async function analyzePost(post, comments, deps = {}) {
   const user = `SOURCE: ${src}
 TITLE: ${post.title}
 ${kindLabel}:
-${(post.selftext || '(link/image post — no body)').slice(0, 6000)}
+${view.body}
 
 TOP COMMENTS:
 ${commentBlock || '(none)'}`;

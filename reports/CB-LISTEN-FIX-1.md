@@ -188,3 +188,96 @@ Exclusion is by the HEAD classifier. Stored outputs are pre-v4 and carry no spea
 2. Steven merges. Cowork runs the Cloud Shell deploy, then verifies that `fn/src/lib/grounding-validator.js` exists at `ref=main` and in the deployed package.
 3. After separate approval: one metered replay of about 40 fixed records (the 3 starter cases plus the 37 judged), within existing caps. Report paired before/after transitions by dimension. Re-run `private-fixture-check.js` on the replay outputs.
 4. Record the founder's `feature_requests` ruling as rubric v2 via the Approvals path.
+
+---
+
+## Corrective round 1b (2026-09-25)
+
+**Predecessor:** `ba3c7bf1a703f697c4357b8b83811395613a191a` on the same branch; no new branch was cut. **Scope:** Cowork review findings R1–R5, plus the repetition guard. R6 and R7 are deploy notes with no code change. The PR stays a draft: not merged, not deployed, no model calls.
+
+### Findings
+
+| Finding | Status | Change |
+|---|---|---|
+| **R1** Feature board pools `basis` | FOLDED | `rollup-engine.js` `features` section. Each mention carries `basis`; pre-v4 mentions are labelled `legacy`, never inferred. `existing_usage` is taken out of the ranked board and reported only as `existingUsage.count` and in `basisCounts`. The board holds `explicit_request`, `implied_need` and `legacy`. Each entry carries `byBasis`, and the brief `featureScope` carries `basisCounts` plus a note. |
+| **R2** Replay path skips filter + validator | FOLDED | New `lib/analysis-pipeline.js` (`excludeUnits`, `groundOutput`) is used by **both** the analyze worker and `scripts/quality-pilot.js`. The pilot's per-row work is now an exported `replayRow`. An excluded submission is skipped before a cap slot is reserved, and the stored result carries `grounding`. `/api/reanalyze` already enqueues onto the analyze worker, so it was covered in round 1. |
+| **R3** Validator checks full text, prompt is truncated | FOLDED | New `lib/prompt-view.js` holds the 6,000-char body cut and the 8,000-char comment-block cut. `analyzePost` builds its prompt from it (byte-identical output), and `grounding-validator` builds its units from the same view, so a quote from past a cut is rejected. |
+| **R4** Audit tools miss v4 quote fields | FOLDED | `grounding-validator.quoteEntries` lists every quote location: notable quote, every list field, and `persona.goal`. `quality-benchmark.analysisQuotes`, `audit.quoteFieldsOf` and `retag.quotesFrom` now use it. `contribution-filter` also removes source-confirmed mod/bot items from the v4 fields and blanks a goal whose only source is excluded. |
+| **R5** Ingest drops comment `distinguished` / `stickied` | FOLDED | Captured in `sources/arcticshift.js` (`fetchPostComments`) and `reddit.js` (`fetchTopComments`). |
+| **R6** `SCHEMA_VERSION` 3→4 vs `/api/reanalyze` default | Deploy note, no code | Calling `/api/reanalyze` with its default `minVersion` would enqueue the whole corpus. Nothing in this round calls it. |
+| **R7** Mixed v3/v4 rows on boards | Deploy note, no code | R1's `legacy` label and `basisCounts` make the feature-board mix visible. Other boards still mix v3 and v4 rows, so any comparison across the deploy date must say so. |
+
+**Which sources carry comment role flags (R5):**
+- **Arctic Shift:** yes. `/api/comments/search` returns Reddit's own comment fields, which is where comment *rows* already read them (`normalizeComment`).
+- **Reddit OAuth:** yes. `t1` listing data includes both.
+- **Bluesky:** no. Replies have no moderator-distinguished or stickied concept, so no role flag exists to capture.
+- **Existing `raw` archives are not backfilled.** Comments already stored still lack the flags; only newly ingested comments carry them.
+
+**registry-hash ruling:** recorded as the founder decision from the review (**DECLINED** removal). The guard below reports what it removes.
+
+### Repetition guard (private fixtures, counts only)
+
+These counts come from `fn/scripts/private-fixture-check.js` (`repetitionGuard`), with no model calls. Role is derived from the source unit: `ordinary` has no mod/bot role, `mod/bot` has one.
+
+| Measure | Ordinary | Mod/bot | Other |
+|---|---|---|---|
+| `registry-hash` quote matches recorded against the **live** registry in the pilot archive's quote checks (138 records, all with the registry available) | 0 | 6 matches, 1 distinct unit | — |
+| Units a registry **rebuilt from the pilot raw comments alone** would exclude (364 units; 2 hashes pass the production rule) | 0 | 20 | — |
+| Same, **packet comments pooled across subs** (1,016 units; 3 hashes). Pooling can only over-count, so this is an upper bound for the slice | 0 | 43 | — |
+| Rollup **quote-recurrence** exclusions over the 1,000 pilot rows' stored deal-breaker/trust quotes | 0 | 0 | 20 on rows whose raw text is not in the archive (role not derivable) |
+
+Two limits on reading these:
+- The fixtures are a small slice of the corpus. A registry rebuilt from them is a floor on what the corpus-wide registry holds, not an estimate of it.
+- The 20 quote-recurrence exclusions have **no derivable role**, because the archive holds raw text for only 138 of the 1,000 rows. They are neither cleared nor confirmed.
+
+No ordinary-role unit was excluded by `registry-hash` in any view available here.
+
+### Tests — `fn/test/listen-fix-1b.test.js` (synthetic text only)
+
+| Test | Predecessor `ba3c7bf` | HEAD |
+|---|---|---|
+| R1 mixed v3/v4 rows: separate basis counts, existing usage never ranked, legacy labelled | ✖ no `basisCounts` | ✔ |
+| R2 replay never sends a ModTeam comment; result carries `grounding` | ✖ no `replayRow` | ✔ |
+| R2 replay skips an excluded submission without reserving a cap slot | ✖ no `replayRow` | ✔ |
+| R3 quote after the 8,000-char comment cut rejected; before it kept | ✖ no prompt view | ✔ |
+| R3 quote after the 6,000-char post cut rejected; prompt built from the same view | ✖ quote validated against full text | ✔ |
+| R4 all three audit readers cover the v4 quote fields | ✖ v4 quotes missing | ✔ |
+| R4 contribution filter removes a v4 item quoting only a ModTeam comment | ✖ item kept | ✔ |
+| R5 Arctic Shift post comments keep `distinguished` / `stickied` (stubbed fetch) | ✖ fields absent | ✔ |
+| R5 Reddit OAuth top comments keep `distinguished` / `stickied` (stubbed fetch) | ✖ fields absent | ✔ |
+
+On baseline `0fee3bf` the file does not load, because round 1's modules do not exist there (1 file-level failure).
+
+### Acceptance checks (all original checks re-run)
+
+1. **New tests:** 9/9 fail on `ba3c7bf` and 9/9 pass on HEAD. Round-1 tests: 12/12 still pass.
+2. **Existing suite vs `0fee3bf`, zero delta:**
+   - HEAD: 284 tests (263 + 12 + 9), 282 pass, 2 fail.
+   - Same two pre-existing failures: the duplicate subreddit list, and the Windows-only CAS timing control. Cowork's Linux run showed the CAS test passing there.
+3. **Syntax:** `node --check` passes on every changed or new JS file.
+4. **Zero model calls:** the suite ran with every model, API and source env var unset and a network trap preloaded (33 processes). It logged 0 network attempts; the R5 tests replace `fetch` with an in-process stub.
+5. **Secret guard:** see the receipt; clean at commit time.
+6. **Public-data guard:** `public-data-guard.js` passes on the staged diff (see the receipt).
+7. **Paths:**
+   - filter/pipeline: `analysis-pipeline.js`, `analyze-worker.js`, `contribution-filter.js`
+   - prompt/validator: `prompt-view.js`, `aoai.js`, `grounding-validator.js`
+   - rollup: `rollup-engine.js`
+   - audit readers: `quality-benchmark.js`, `audit.js`, `retag.js`
+   - ingest: `sources/arcticshift.js`, `reddit.js`
+   - replay: `scripts/quality-pilot.js`
+   - the fixture check, the new test file, this report
+
+   The analyze worker now reads the registry before the cap check rather than after. This is a cache read with no spend, so ordering is otherwise unchanged.
+
+### Round-1 counts unchanged
+
+Re-running the fixture check at HEAD reproduces every round-1 count above (e.g. packet arm A sourced-only-from-excluded: 45 / 70 / 27 / 22).
+
+### What is NOT done (1b)
+
+- No replay or reanalysis, no deploy, no merge. The approved ~40-record replay still needs its own go; it would now run through `replayRow`.
+- Existing `raw` archives are not backfilled with comment role flags.
+- The 20 quote-recurrence exclusions on rows without archived raw text remain unattributed.
+- No boilerplate fingerprints are registered; `BOILERPLATE_FINGERPRINTS` still ships empty.
+- No semantic item-versus-quote check, and no rubric v2.
+- The R1 choice to keep `legacy` mentions on the ranked board, so it does not empty before reanalysis, is flagged for Cowork. The alternative is a legacy-free board that would be nearly empty until the corpus is reanalysed.
