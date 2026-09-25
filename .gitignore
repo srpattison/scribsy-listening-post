@@ -3,3 +3,8 @@
 # remote build's behaviour does not change underneath deploy.sh.
 node_modules/
 fn/package-lock.json
+
+# Private review fixtures (CB-LISTEN-FIX-1). Never committed: the repo is
+# public. Keep them outside the working tree and point LP_PRIVATE_DIR at them.
+lp-private/
+*.private.json

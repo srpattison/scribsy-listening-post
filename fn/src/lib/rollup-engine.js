@@ -74,6 +74,16 @@ const bySalience = (index) => (a, b) =>
 // Row parsing — per-row isolation (§4.2)
 // ---------------------------------------------------------------------------
 
+// pain_points / expected_baseline / ethics_concerns are grounded objects
+// { item, quote, speaker } from schema v4 (CB-LISTEN-FIX-1) and plain strings
+// on legacy rows. Every consumer below reads the label, so both shapes reduce
+// to it here; anything else is skipped rather than crashing the row.
+function itemLabels(list) {
+  if (!Array.isArray(list)) return [];
+  return list.map((x) => (typeof x === 'string' ? x : x && typeof x.item === 'string' ? x.item : null))
+    .filter((x) => typeof x === 'string');
+}
+
 // Returns { items, skipped }. A row with unparseable analysisJson, or one whose
 // shape trips the mapper, is counted and dropped — never thrown.
 function parseRows(rows) {
@@ -121,12 +131,12 @@ function parseRows(rows) {
         experience: (a.persona && a.persona.experience) || 'unknown',
         personaGoal: (a.persona && a.persona.goal) || '',
         topics: a.topics || [],
-        painPoints: a.pain_points || [],
-        expectedBaseline: a.expected_baseline || [],
+        painPoints: itemLabels(a.pain_points),
+        expectedBaseline: itemLabels(a.expected_baseline),
         dealBreakers: a.deal_breakers || [],
         trustSignals: a.trust_signals || [],
         features: a.feature_requests || [],
-        ethics: a.ethics_concerns || [],
+        ethics: itemLabels(a.ethics_concerns),
         tools: (a.tools_mentioned || []).map((t) =>
           typeof t === 'string' ? { tool: t, sentiment: 'neutral', switching: false, context: '' } : t),
         quote: a.notable_quote || '',

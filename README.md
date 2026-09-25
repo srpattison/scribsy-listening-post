@@ -168,6 +168,25 @@ Nothing computes repeat counts at analyze time.
 Comments are **filtered, never deleted** — `raw` blobs stay complete, because the
 archive is the only path to remediation.
 
+**Moderator roles and grounded items (CB-LISTEN-FIX-1).** Archived context
+comments carry only `{ id, author, score, body }`, so `distinguished` and
+`stickied` could never fire on them, and a subreddit's `<sub>-ModTeam` account
+matched nothing. Role is now also derived from the author name
+(`-ModTeam` → `mod-team-account`, `AutoModerator` → `automoderator`), and an
+explicit `roleHint` on a unit is honoured. A submission from an excluded role is
+not analysed at all. `MOD_BOT_AUTHORS` adds author names; `BOILERPLATE_FINGERPRINTS`
+registers mod templates by sentence hash (`comment-filter.fingerprintsOf(text)`),
+so a template pasted by an ordinary account is removed while any genuine
+sentence added to it is kept. Neither list is inferred from repetition.
+
+Every list item the model returns now names its `speaker` (`post` or
+`comment N`) and carries a verbatim `quote`; `lib/grounding-validator.js` drops
+items whose quote is not in that unit, and records per-field drop counts on the
+row (`analysisJson.grounding`). This checks grounding only, not meaning.
+`scripts/private-fixture-check.js` runs the same deterministic checks over
+private review fixtures (`LP_PRIVATE_DIR`, outside the repo; counts only), and
+`scripts/public-data-guard.js` checks a staged diff against them before commit.
+
 `view=health` reports `filteredCommentsLast24h` broken down by reason, and each
 analysed row records `botCommentsFiltered` / `botCommentsFilterReasons`. Without
 that, "filtering works" and "no bot comments were present" are indistinguishable
@@ -317,6 +336,9 @@ Run the unit tests with `cd fn && npm test` (Node's built-in runner, no deps).
 - `DAILY_ANALYZE_CAP` — posts analyzed per day (default 1500); over-cap jobs
   defer 6h, nothing is dropped
 - `MIN_COMMENTS_FOR_FETCH` — skip comment fetch below this count (default 3)
+- `MOD_BOT_AUTHORS` — extra mod/bot author names excluded before the model
+  (comma list, default empty) · `BOILERPLATE_FINGERPRINTS` — registered template
+  sentence hashes (comma list, default empty)
 - `CHAT_MODEL` / `CHAT_MODEL_VERSION` (deploy-time) — defaults to `gpt-5-mini`
   `2025-08-07` (verified available Aug 2026; gpt-4o-mini is retired). If create
   fails, `az cognitiveservices account list-models -n scribsy-aoai-2026 -g

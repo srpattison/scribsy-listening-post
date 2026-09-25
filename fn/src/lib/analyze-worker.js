@@ -19,7 +19,8 @@ const store = require('./store');
 const config = require('./config');
 const commentPolicy = require('./comment-policy');
 const { analyzePost, embedTexts, vecToB64 } = require('./aoai');
-const { filterComments } = require('./comment-filter');
+const { filterComments, classifyPost } = require('./comment-filter');
+const { validateAnalysis } = require('./grounding-validator');
 const registry = require('./boilerplate-registry');
 const dailyCap = require('./daily-cap');
 const provenance = require('./analysis-provenance');
@@ -97,6 +98,18 @@ async function processAnalyzeJob(job, context, { storeImpl = store, chat, regist
     }
   }
 
+  // Pre-model exclusion of the submission itself (CB-LISTEN-FIX-1 F1): an
+  // AutoModerator / ModTeam / moderator post is not writer text. Decided before
+  // the daily cap, so it never consumes a slot. The raw archive is untouched.
+  const exclusionLists = { modBotAuthors: config.modBotAuthors(), fingerprints: config.boilerplateFingerprints() };
+  const postClass = classifyPost(raw.post, exclusionLists);
+  if (!postClass.keep) {
+    await dailyCap.recordFiltered(storeImpl.aggregateBackend('filter-counter', todayKey()), { [`post-${postClass.reason}`]: 1 }, { context })
+      .catch((e) => context.warn(`filter counter failed: ${e.message}`));
+    context.log(`${kind} ${subreddit}/${id} not analyzed: excluded unit (${postClass.reason})`);
+    return;
+  }
+
   const reservation = await reserveDailySlot(storeImpl, context);
   if (!reservation.ok) {
     const why = reservation.reserved
@@ -114,10 +127,11 @@ async function processAnalyzeJob(job, context, { storeImpl = store, chat, regist
   //
   // The raw blob is NOT modified; only what reaches the model is narrowed.
   const boilerplateHashes = await registryCache.get(subreddit).catch(() => new Set());
-  const { kept: promptComments, reasons: filterReasons, filteredCount } =
+  const { kept: promptComments, reasons: filterReasons, filteredCount, strippedCount } =
     filterComments(raw.comments || [], {
       registry: boilerplateHashes,
-      minChars: config.boilerplateMinCharsBody()
+      minChars: config.boilerplateMinCharsBody(),
+      ...exclusionLists
     });
   if (filteredCount) {
     context.log(`filtered ${filteredCount} bot/boilerplate comment(s) from ${subreddit}/${id}: ${JSON.stringify(filterReasons)}`);
@@ -125,7 +139,7 @@ async function processAnalyzeJob(job, context, { storeImpl = store, chat, regist
       .catch((e) => context.warn(`filter counter failed: ${e.message}`));
   }
 
-  const analysis = await analyzePost(raw.post, promptComments, chat ? { chat } : undefined);
+  const modelOutput = await analyzePost(raw.post, promptComments, chat ? { chat } : undefined);
 
   // Provenance stamps (CB-LISTEN-CORRECT-1 §2). Input hash, prompt version,
   // model deployment and timestamp were taken at the model call site inside
@@ -136,8 +150,18 @@ async function processAnalyzeJob(job, context, { storeImpl = store, chat, regist
   // about, and store.analysisEntity CLEARS the row's stamp columns rather
   // than guessing — or, on a re-analysis, leaving stale stamps standing
   // against the new analysis.
-  const callSiteStamp = analysis._provenance || null;
-  delete analysis._provenance; // never let the stamp leak into analysisJson
+  const callSiteStamp = modelOutput._provenance || null;
+  delete modelOutput._provenance; // never let the stamp leak into analysisJson
+
+  // Deterministic grounding (CB-LISTEN-FIX-1 F4): every item's quote must be in
+  // the unit its speaker names, among the units the model was actually shown.
+  // Drops are counted per field and kept on the row so drift is measurable.
+  const grounding = validateAnalysis(modelOutput, { post: raw.post, comments: promptComments });
+  const analysis = grounding.analysis;
+  analysis.grounding = { checked: grounding.checked, drops: grounding.drops, dropReasons: grounding.dropReasons };
+  if (Object.keys(grounding.drops).length) {
+    context.log(`grounding dropped items from ${subreddit}/${id}: ${JSON.stringify(grounding.dropReasons)}`);
+  }
   let stamp = null;
   if (callSiteStamp) {
     stamp = {
@@ -178,7 +202,9 @@ async function processAnalyzeJob(job, context, { storeImpl = store, chat, regist
     // Per-row provenance for the filter: how many comments were withheld from
     // this row's prompt, and which detector fired (§3c).
     botCommentsFiltered: filteredCount,
-    botCommentsFilterReasons: filterReasons,
+    botCommentsFilterReasons: strippedCount
+      ? { ...filterReasons, 'boilerplate-fingerprint-partial': strippedCount }
+      : filterReasons,
     provenanceStamp: stamp
   });
   if (kind === 'comment') {

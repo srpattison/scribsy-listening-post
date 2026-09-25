@@ -158,6 +158,22 @@ function boilerplateMinQuoteRepeats(env = process.env) {
   return Number.isFinite(n) && n > 0 ? n : 5;
 }
 
+// Pre-model exclusion lists (CB-LISTEN-FIX-1 F1). Both are mechanical lists
+// with an empty default: the role and AutoModerator detectors need no
+// configuration, and an unset list excludes nothing extra.
+//   MOD_BOT_AUTHORS         comma-separated author names (case-insensitive)
+//   BOILERPLATE_FINGERPRINTS comma-separated 16-hex sentence hashes, produced
+//                            by comment-filter.fingerprintsOf(templateText)
+function modBotAuthors(env = process.env) {
+  return new Set(String(env.MOD_BOT_AUTHORS || '').split(',')
+    .map((s) => s.trim().toLowerCase()).filter(Boolean));
+}
+
+function boilerplateFingerprints(env = process.env) {
+  return new Set(String(env.BOILERPLATE_FINGERPRINTS || '').split(',')
+    .map((s) => s.trim().toLowerCase()).filter((s) => /^[0-9a-f]{16}$/.test(s)));
+}
+
 // Staleness threshold (hours) before the backfill sweep treats a
 // `queued: true, exhausted: false` walk with no observed activity as orphaned
 // and re-enqueues its wake-up message (CB-LISTEN-CORRECT-1 §4). Mechanical
@@ -211,6 +227,8 @@ module.exports = {
   boilerplateMinCharsTitle,
   boilerplateMinQuoteChars,
   boilerplateMinQuoteRepeats,
+  modBotAuthors,
+  boilerplateFingerprints,
   backfillSweepStaleHours,
   auditMaxTrackedHashes,
   DEFAULT_AUDIT_MAX_TRACKED_HASHES,

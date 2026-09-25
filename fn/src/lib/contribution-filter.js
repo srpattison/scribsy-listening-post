@@ -6,6 +6,11 @@
 const { checkQuotes } = require('./quality-benchmark');
 const { idFromRowKey, kindOf } = require('./rowkeys');
 
+// Role/author signals only. registry-hash is repetition-derived and never
+// excludes a contribution on its own.
+const SOURCE_EXCLUDING_REASONS = new Set(['automod-author', 'distinguished', 'stickied',
+  'role-mod-team-account', 'role-automoderator', 'role-moderator', 'mod-bot-list', 'boilerplate-fingerprint']);
+
 function filterContributions(row, raw, registry) {
   const checks = checkQuotes(row, raw, { registry, registryAvailable: true });
   const analysis = JSON.parse(row.analysisJson);
@@ -14,7 +19,7 @@ function filterContributions(row, raw, registry) {
     statuses[check.status] = (statuses[check.status] || 0) + 1;
     if (check.status === 'short-ambiguous' || !check.matches.length ||
         !check.matches.every(match => match.filtered &&
-          ['automod-author', 'distinguished', 'stickied'].includes(match.reason))) continue;
+          SOURCE_EXCLUDING_REASONS.has(match.reason))) continue;
     excluded.push({ field: check.field, index: check.index, quoteHash: check.quoteHash,
       reasons: [...new Set(check.matches.map(match => match.reason))].sort() });
   }
