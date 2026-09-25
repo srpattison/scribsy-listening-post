@@ -88,7 +88,9 @@ test('an unset budget cap analyses nothing and says why', () => {
 test('the repo contains exactly one subreddit list, in deploy.sh', () => {
   const root = path.join(__dirname, '..', '..');
   const found = [];
-  const skip = new Set(['.git', 'node_modules', 'test']);
+  // reports/ is narration of past rounds, not configuration: a report may quote
+  // the list it changed without being a second source of it.
+  const skip = new Set(['.git', 'node_modules', 'test', 'reports']);
   // A "sub list" = 6+ comma-separated bare words including the anchor subs.
   const LIST = /writing\s*,\s*writers\s*,\s*nanowrimo/i;
 
