@@ -43,6 +43,12 @@ const STANCE_BASIS = [
 // Deal-breaker kinds — what would make a writer refuse or abandon a tool.
 const DEALBREAKER_KINDS = ['missing-feature', 'trust-privacy', 'ai-policy', 'cost', 'platform-lock-in', 'other'];
 
+// Why a feature_requests item is on the list (CB-LISTEN-FIX-1, founder ruling
+// 2026-09-24): the field curates things people might value in a writing tool,
+// and a description of existing tool usage qualifies — tagged, so the three
+// kinds of evidence are never pooled by accident.
+const FEATURE_BASIS = ['explicit_request', 'existing_usage', 'implied_need'];
+
 // NOTE: there is deliberately no DEFAULT_SUBREDDITS here. The subreddit list
 // lives in exactly one place in this repo — deploy.sh — and is read from the
 // SUBREDDITS app setting at runtime via lib/config.js, which throws if it is
@@ -63,7 +69,7 @@ function mentionsAi(text) {
 // Bump when the analysis schema/prompt changes materially. Rows carry the
 // version they were analyzed under; POST /api/reanalyze re-runs older rows
 // from the raw archive.
-const SCHEMA_VERSION = 3; // v1 base · v2 strategy dims · v3 tool sentiment + embeddings
+const SCHEMA_VERSION = 4; // v1 base · v2 strategy dims · v3 tool sentiment + embeddings · v4 grounded items (quote + speaker)
 
 // Scribsy pillar-resonance keywords (matched against wishes/trust/topics to
 // surface posts asking for what Scribsy builds). Tune freely — resonance is
@@ -86,4 +92,4 @@ const COMPETITOR_ALIASES = {
   'archive of our own': 'AO3'
 };
 
-module.exports = { TOPICS, STANCES, EXPERIENCE, STANCE_BASIS, DEALBREAKER_KINDS, SCHEMA_VERSION, PILLAR_SIGNALS, AI_PREFILTER, mentionsAi, COMPETITOR_ALIASES };
+module.exports = { TOPICS, STANCES, EXPERIENCE, STANCE_BASIS, DEALBREAKER_KINDS, FEATURE_BASIS, SCHEMA_VERSION, PILLAR_SIGNALS, AI_PREFILTER, mentionsAi, COMPETITOR_ALIASES };

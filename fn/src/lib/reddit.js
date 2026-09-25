@@ -101,7 +101,10 @@ async function fetchTopComments(subreddit, postId, max = 20) {
       id: c.data.id,
       author: c.data.author,
       scoreAtCapture: c.data.score,
-      body: (c.data.body || '').slice(0, 3000)
+      body: (c.data.body || '').slice(0, 3000),
+      // Captured for the pre-model filter (CB-LISTEN-FIX-1b R5).
+      distinguished: c.data.distinguished || null,
+      stickied: c.data.stickied === true
     }));
 }
 

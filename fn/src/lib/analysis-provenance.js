@@ -101,7 +101,9 @@ function registryVersionOf(hashes) {
 // comment-filter.js applies them at analyze time), so its version is a hash of
 // that source, read from disk once per process. The one env-tunable threshold
 // the ANALYZE-TIME filter consults - the body floor - is folded in at stamp
-// time because it changes filtering behaviour without a code change.
+// time because it changes filtering behaviour without a code change. The
+// MOD_BOT_AUTHORS and BOILERPLATE_FINGERPRINTS lists (CB-LISTEN-FIX-1) are
+// folded in for the same reason.
 //
 // Deliberately NOT folded in (review finding): BOILERPLATE_MIN_CHARS_TITLE and
 // BOILERPLATE_MIN_REPEATS shape registry CONSTRUCTION only, which
@@ -121,7 +123,11 @@ function filterSourceHash() {
 function filterVersion({ config = require('./config') } = {}) {
   return hash32(joinParts(
     filterSourceHash(),
-    JSON.stringify({ minCharsBody: config.boilerplateMinCharsBody() })
+    JSON.stringify({
+      minCharsBody: config.boilerplateMinCharsBody(),
+      modBotAuthors: [...config.modBotAuthors()].sort(),
+      fingerprints: [...config.boilerplateFingerprints()].sort()
+    })
   ));
 }
 

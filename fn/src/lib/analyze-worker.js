@@ -19,7 +19,7 @@ const store = require('./store');
 const config = require('./config');
 const commentPolicy = require('./comment-policy');
 const { analyzePost, embedTexts, vecToB64 } = require('./aoai');
-const { filterComments } = require('./comment-filter');
+const { excludeUnits, groundOutput } = require('./analysis-pipeline');
 const registry = require('./boilerplate-registry');
 const dailyCap = require('./daily-cap');
 const provenance = require('./analysis-provenance');
@@ -97,6 +97,24 @@ async function processAnalyzeJob(job, context, { storeImpl = store, chat, regist
     }
   }
 
+  // Pre-model exclusion (§3b, CB-LISTEN-FIX-1 F1), shared with the replay
+  // path via lib/analysis-pipeline.js. Bot text must not enter the prompt:
+  // once it does, it lands in this row's verbatim quote fields and
+  // comment_stance_mix, and no amount of row-level tagging can remove it —
+  // this row is genuinely human-authored. An AutoModerator / ModTeam /
+  // moderator submission is not writer text at all, and is decided before the
+  // daily cap so it never consumes a slot.
+  //
+  // The raw blob is NOT modified; only what reaches the model is narrowed.
+  const boilerplateHashes = await registryCache.get(subreddit).catch(() => new Set());
+  const units = excludeUnits(raw, { registry: boilerplateHashes });
+  if (units.postExcluded) {
+    await dailyCap.recordFiltered(storeImpl.aggregateBackend('filter-counter', todayKey()), { [`post-${units.postReason}`]: 1 }, { context })
+      .catch((e) => context.warn(`filter counter failed: ${e.message}`));
+    context.log(`${kind} ${subreddit}/${id} not analyzed: excluded unit (${units.postReason})`);
+    return;
+  }
+
   const reservation = await reserveDailySlot(storeImpl, context);
   if (!reservation.ok) {
     const why = reservation.reserved
@@ -107,25 +125,14 @@ async function processAnalyzeJob(job, context, { storeImpl = store, chat, regist
     return;
   }
 
-  // Prompt-side bot/boilerplate filtering (§3b). Bot text must not enter the
-  // prompt: once it does, it lands in this row's verbatim quote fields and
-  // comment_stance_mix, and no amount of row-level tagging can remove it —
-  // this row is genuinely human-authored.
-  //
-  // The raw blob is NOT modified; only what reaches the model is narrowed.
-  const boilerplateHashes = await registryCache.get(subreddit).catch(() => new Set());
-  const { kept: promptComments, reasons: filterReasons, filteredCount } =
-    filterComments(raw.comments || [], {
-      registry: boilerplateHashes,
-      minChars: config.boilerplateMinCharsBody()
-    });
+  const { promptComments, filterReasons, filteredCount } = units;
   if (filteredCount) {
     context.log(`filtered ${filteredCount} bot/boilerplate comment(s) from ${subreddit}/${id}: ${JSON.stringify(filterReasons)}`);
     await dailyCap.recordFiltered(storeImpl.aggregateBackend('filter-counter', todayKey()), filterReasons, { context })
       .catch((e) => context.warn(`filter counter failed: ${e.message}`));
   }
 
-  const analysis = await analyzePost(raw.post, promptComments, chat ? { chat } : undefined);
+  const modelOutput = await analyzePost(raw.post, promptComments, chat ? { chat } : undefined);
 
   // Provenance stamps (CB-LISTEN-CORRECT-1 §2). Input hash, prompt version,
   // model deployment and timestamp were taken at the model call site inside
@@ -136,8 +143,16 @@ async function processAnalyzeJob(job, context, { storeImpl = store, chat, regist
   // about, and store.analysisEntity CLEARS the row's stamp columns rather
   // than guessing — or, on a re-analysis, leaving stale stamps standing
   // against the new analysis.
-  const callSiteStamp = analysis._provenance || null;
-  delete analysis._provenance; // never let the stamp leak into analysisJson
+  const callSiteStamp = modelOutput._provenance || null;
+  delete modelOutput._provenance; // never let the stamp leak into analysisJson
+
+  // Deterministic grounding (CB-LISTEN-FIX-1 F4): every item's quote must be in
+  // the unit its speaker names, among the units the model was actually shown.
+  // Drops are counted per field and kept on the row so drift is measurable.
+  const analysis = groundOutput(modelOutput, raw.post, promptComments);
+  if (Object.keys(analysis.grounding.drops).length) {
+    context.log(`grounding dropped items from ${subreddit}/${id}: ${JSON.stringify(analysis.grounding.dropReasons)}`);
+  }
   let stamp = null;
   if (callSiteStamp) {
     stamp = {
@@ -178,7 +193,7 @@ async function processAnalyzeJob(job, context, { storeImpl = store, chat, regist
     // Per-row provenance for the filter: how many comments were withheld from
     // this row's prompt, and which detector fired (§3c).
     botCommentsFiltered: filteredCount,
-    botCommentsFilterReasons: filterReasons,
+    botCommentsFilterReasons: units.auditReasons,
     provenanceStamp: stamp
   });
   if (kind === 'comment') {

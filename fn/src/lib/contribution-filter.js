@@ -5,6 +5,12 @@
 // Raw archives and stored analysis are never mutated.
 const { checkQuotes } = require('./quality-benchmark');
 const { idFromRowKey, kindOf } = require('./rowkeys');
+const { quoteEntries, QUOTE_LIST_FIELDS } = require('./grounding-validator');
+
+// Role/author signals only. registry-hash is repetition-derived and never
+// excludes a contribution on its own.
+const SOURCE_EXCLUDING_REASONS = new Set(['automod-author', 'distinguished', 'stickied',
+  'role-mod-team-account', 'role-automoderator', 'role-moderator', 'mod-bot-list', 'boilerplate-fingerprint']);
 
 function filterContributions(row, raw, registry) {
   const checks = checkQuotes(row, raw, { registry, registryAvailable: true });
@@ -14,12 +20,15 @@ function filterContributions(row, raw, registry) {
     statuses[check.status] = (statuses[check.status] || 0) + 1;
     if (check.status === 'short-ambiguous' || !check.matches.length ||
         !check.matches.every(match => match.filtered &&
-          ['automod-author', 'distinguished', 'stickied'].includes(match.reason))) continue;
+          SOURCE_EXCLUDING_REASONS.has(match.reason))) continue;
     excluded.push({ field: check.field, index: check.index, quoteHash: check.quoteHash,
       reasons: [...new Set(check.matches.map(match => match.reason))].sort() });
   }
   if (excluded.some(item => item.field === 'notable_quote')) analysis.notable_quote = '';
-  for (const field of ['feature_requests', 'deal_breakers', 'trust_signals']) {
+  if (excluded.some(item => item.field === 'persona.goal') && analysis.persona) {
+    analysis.persona = { ...analysis.persona, goal: '', goal_quote: '', goal_speaker: '' };
+  }
+  for (const field of QUOTE_LIST_FIELDS) {
     const indices = new Set(excluded.filter(item => item.field === field).map(item => item.index));
     if (indices.size) analysis[field] = analysis[field].filter((_, index) => !indices.has(index));
   }
@@ -40,8 +49,7 @@ async function prepareContributions(rows, store, registry, { concurrency = 16 } 
       prepared[index] = row;
       let analysis;
       try { analysis = JSON.parse(row.analysisJson); } catch { continue; }
-      if (!analysis?.notable_quote && !['feature_requests', 'deal_breakers', 'trust_signals']
-        .some(field => Array.isArray(analysis?.[field]) && analysis[field].some(item => item?.quote))) continue;
+      if (!quoteEntries(analysis).length) continue;
       try {
         const raw = await store.getRaw(row.partitionKey, row.createdUtc, idFromRowKey(row.rowKey), kindOf(row));
         const result = filterContributions(row, raw, registry.get(String(row.partitionKey).toLowerCase()));

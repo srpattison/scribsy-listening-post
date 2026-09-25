@@ -5,6 +5,7 @@
 const { createHash } = require('node:crypto');
 const { kindOf } = require('./rowkeys');
 const { classifyComment } = require('./comment-filter');
+const { quoteEntries } = require('./grounding-validator');
 const digest = text => createHash('sha256').update(String(text)).digest('hex');
 const identity = row => `${row.partitionKey}|${row.rowKey}`;
 const normalize = text => String(text || '').normalize('NFKC').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -45,17 +46,9 @@ function selectSample(rows, limit = 120, seed = 'LP-QUALITY-1') {
     limitation: 'Balanced diagnostic sample; not population-weighted. Uncovered strata are explicit.' } };
 }
 
+// Every quote location, including the v4 fields (CB-LISTEN-FIX-1b R4).
 function analysisQuotes(row) {
-  const a = JSON.parse(row.analysisJson);
-  const out = [];
-  if (typeof a.notable_quote === 'string' && a.notable_quote.trim()) out.push({ field: 'notable_quote', quote: a.notable_quote });
-  for (const field of ['feature_requests','deal_breakers','trust_signals']) {
-    if (!Array.isArray(a[field])) continue;
-    a[field].forEach((item,index) => {
-      if (typeof item?.quote === 'string' && item.quote.trim()) out.push({ field, index, quote:item.quote });
-    });
-  }
-  return out;
+  return quoteEntries(JSON.parse(row.analysisJson));
 }
 
 function checkQuotes(row, raw, { registry = null, registryAvailable = false } = {}) {

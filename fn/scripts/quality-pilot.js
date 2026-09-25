@@ -4,6 +4,28 @@
 // Usage: node scripts/quality-pilot.js <archive.json> <settings.json> <new-private-dir>
 const fs = require('node:fs');
 const path = require('node:path');
+const { excludeUnits, groundOutput } = require('../src/lib/analysis-pipeline');
+
+// One replayed row, through the SAME exclusion and grounding steps as the live
+// analyze worker (CB-LISTEN-FIX-1b R2): excluded units never reach the model,
+// an excluded submission is not analysed (and reserves no cap slot), and the
+// stored result carries `grounding` counts. `deps.analyzePost` and
+// `deps.reserve` are injected so this is testable without a model or store.
+async function replayRow(row, raw, { registry, analyzePost, reserve, checkQuotes }) {
+  const units = excludeUnits(raw, { registry });
+  if (units.postExcluded) return { skipped: `excluded-post:${units.postReason}`, filteredComments: units.auditReasons };
+  if (!(await reserve())) return { stopped: 'daily-cap' };
+  const modelOutput = await analyzePost(raw.post, units.promptComments);
+  delete modelOutput._provenance;
+  const analysis = groundOutput(modelOutput, raw.post, units.promptComments);
+  const newRow = { ...row, analysisJson: JSON.stringify(analysis) };
+  const old = JSON.parse(row.analysisJson);
+  return {
+    analysis, filteredComments: units.auditReasons,
+    oldChecks: checkQuotes(row, raw, { registry }), newChecks: checkQuotes(newRow, raw, { registry }),
+    changedFields: Object.keys(analysis).filter(key => JSON.stringify(analysis[key]) !== JSON.stringify(old[key]))
+  };
+}
 
 async function main() {
   const [archivePath, settingsPath, outputPath] = process.argv.slice(2);
@@ -29,7 +51,6 @@ async function main() {
   fs.mkdirSync(out, { recursive: true, mode: 0o700 });
   const store = require('../src/lib/store'), aoai = require('../src/lib/aoai');
   const registry = await require('../src/lib/boilerplate-filter').loadRegistryForSubs(store, rows.map(row => row.partitionKey));
-  const { filterComments } = require('../src/lib/comment-filter');
   const { idFromRowKey, kindOf } = require('../src/lib/rowkeys');
   const { reserveDailySlot } = require('../src/lib/daily-cap');
   const config = require('../src/lib/config');
@@ -71,19 +92,17 @@ async function main() {
         const row = pendingRows[cursor++], id = q.identity(row);
         try {
           const raw = await store.getRaw(row.partitionKey, row.createdUtc, idFromRowKey(row.rowKey), kindOf(row));
-          const hashes = registry.get(String(row.partitionKey).toLowerCase());
-          const { kept, reasons } = filterComments(raw.comments || [], { registry: hashes, minChars: config.boilerplateMinCharsBody() });
-          const day = new Date().toISOString().slice(0, 10);
-          const { cap, configError } = config.dailyAnalyzeCap();
-          if (configError) throw new Error('Invalid daily-cap configuration');
-          const reservation = await reserveDailySlot(store.aggregateBackend('analyze-counter', day), cap);
-          if (!reservation.ok) { stopped = 'daily-cap'; break; }
-          const analysis = await aoai.analyzePost(raw.post, kept);
+          const hashes = registry.get(String(row.partitionKey).toLowerCase()) || new Set();
+          const reserve = async () => {
+            const day = new Date().toISOString().slice(0, 10);
+            const { cap, configError } = config.dailyAnalyzeCap();
+            if (configError) throw new Error('Invalid daily-cap configuration');
+            return (await reserveDailySlot(store.aggregateBackend('analyze-counter', day), cap)).ok;
+          };
+          const result = await replayRow(row, raw, { registry: hashes, analyzePost: aoai.analyzePost, reserve, checkQuotes: q.checkQuotes });
+          if (result.stopped) { stopped = result.stopped; break; }
           consecutiveErrors = 0;
-          const newRow = { ...row, analysisJson: JSON.stringify(analysis) };
-          results.push({ id, row, raw, analysis, filteredComments: reasons,
-            oldChecks: q.checkQuotes(row, raw, { registry: hashes }), newChecks: q.checkQuotes(newRow, raw, { registry: hashes }),
-            changedFields: Object.keys(analysis).filter(key => key !== '_provenance' && JSON.stringify(analysis[key]) !== JSON.stringify(JSON.parse(row.analysisJson)[key])) });
+          results.push({ id, row, raw, ...result });
         } catch (error) {
           errors++;
           consecutiveErrors++;
@@ -102,4 +121,8 @@ async function main() {
     if (stopped || errors || results.length !== rows.length) process.exitCode = 1;
   } finally { globalThis.fetch = realFetch; }
 }
-main().catch(() => { console.error('Pilot failed; inspect private evidence. No production analysis was replaced.'); process.exitCode = 1; });
+if (require.main === module) {
+  main().catch(() => { console.error('Pilot failed; inspect private evidence. No production analysis was replaced.'); process.exitCode = 1; });
+}
+
+module.exports = { replayRow };

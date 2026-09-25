@@ -130,7 +130,12 @@ async function fetchComments_forPost(postId, max = 20) {
       id: c.id,
       author: c.author,
       scoreAtCapture: c.score || 0, // stored, never ranked on
-      body: (c.body || '').slice(0, 3000)
+      body: (c.body || '').slice(0, 3000),
+      // Same fields normalizeComment keeps for comment rows (CB-LISTEN-FIX-1b
+      // R5): without them the pre-model filter cannot see a moderator posting
+      // from a personal account.
+      distinguished: c.distinguished || null,
+      stickied: c.stickied === true
     }));
 }
 

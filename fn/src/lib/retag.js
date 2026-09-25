@@ -19,6 +19,7 @@
 const cc = require('./content-class');
 const registry = require('./boilerplate-registry');
 const { kindOf, idFromRowKey } = require('./rowkeys');
+const { quoteEntries } = require('./grounding-validator');
 
 // Persist a long-running operation's report BEFORE returning it.
 //
@@ -169,16 +170,10 @@ async function runRetag({
 
 const QUOTE_MIN_CHARS = 25; // below this a "match" is coincidence, not provenance
 
+// Includes the v4 quote fields (CB-LISTEN-FIX-1b R4).
 function quotesFrom(analysis) {
-  if (!analysis || typeof analysis !== 'object') return [];
-  const out = [];
-  if (analysis.notable_quote) out.push(analysis.notable_quote);
-  for (const field of ['deal_breakers', 'trust_signals', 'feature_requests']) {
-    for (const item of analysis[field] || []) {
-      if (item && item.quote) out.push(item.quote);
-    }
-  }
-  return out.filter((q) => cc.normalizeText(q).length >= QUOTE_MIN_CHARS);
+  return quoteEntries(analysis).map((e) => e.quote)
+    .filter((q) => cc.normalizeText(q).length >= QUOTE_MIN_CHARS);
 }
 
 async function scanContamination({
